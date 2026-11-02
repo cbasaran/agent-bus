@@ -44,7 +44,14 @@ export interface MessageBusContext {
   cwd: string;
   agent?: { kind: "main" | "sub" };
   isIdle(): boolean;
+  /** Absent in some harness modes (and in tests): notices are best effort. */
+  ui?: { notify(message: string, level: "info" | "warning" | "error"): void };
+  /** Managed timer: a throw in the callback does not tear the session down. Absent in tests. */
+  setTimeout?(fn: () => void, ms: number): unknown;
 }
+
+/** How long a new session may take to join before the user is told it is not on the bus. */
+const JOIN_NOTICE_MS = 8000;
 
 /** The slice of omp's `ExtensionAPI` used here. */
 export interface MessageBusApi {
@@ -173,18 +180,36 @@ export default function messageBus(pi: MessageBusApi): void {
     if (ctx.agent?.kind === "sub" || connection) return;
     const projectPath = path.resolve(ctx.cwd);
     // Scratch sessions in the temp directory are not project agents (set AGENT_BUS_JOIN_FROM_TMP=1 to test there).
-    if (isUnderTempDir(projectPath) && process.env.AGENT_BUS_JOIN_FROM_TMP !== "1") return;
+    if (isUnderTempDir(projectPath) && process.env.AGENT_BUS_JOIN_FROM_TMP !== "1") {
+      ctx.ui?.notify("message-bus: not joining (session started in the temp directory)", "info");
+      return;
+    }
     sessionCtx = ctx;
-    connection = new BusConnection({
-      url: (process.env.AGENT_BUS_URL?.trim() || `http://127.0.0.1:${DEFAULT_BUS_PORT}`).replace(/\/+$/, ""),
+    const url = (process.env.AGENT_BUS_URL?.trim() || `http://127.0.0.1:${DEFAULT_BUS_PORT}`).replace(/\/+$/, "");
+    let announced = false;
+    const conn = new BusConnection({
+      url,
       host: os.hostname(),
       harness: "omp",
       path: projectPath,
       onDeliver: deliver,
       onReceipt,
+      onJoined: (id) => {
+        if (announced) return;
+        announced = true;
+        ctx.ui?.notify(`message-bus: on the bus as @${id}`, "info");
+      },
       onLog: (line) => console.error(`[message-bus] ${line}`),
     });
-    connection.connect();
+    connection = conn;
+    conn.connect();
+    ctx.setTimeout?.(() => {
+      if (connection !== conn || conn.connected) return;
+      ctx.ui?.notify(
+        `message-bus: cannot reach the bus at ${url} (still retrying). Check AGENT_BUS_URL and the network.`,
+        "warning"
+      );
+    }, JOIN_NOTICE_MS);
   });
 
   pi.on("session_shutdown", () => {
