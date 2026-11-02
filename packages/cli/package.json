@@ -1,0 +1,14 @@
+{
+  "name": "@agent-bus/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "agent-bus": "./src/bin.ts"
+  },
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "dependencies": {
+    "@agent-bus/protocol": "workspace:*",
+    "@agent-bus/server": "workspace:*"
+  }
+}

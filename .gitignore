@@ -1,0 +1,10 @@
+node_modules/
+data/
+dist/
+packages/server/public/dist/
+packages/chrome-extension/dist/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+.DS_Store
+packages/server/public/

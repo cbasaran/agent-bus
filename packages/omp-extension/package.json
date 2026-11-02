@@ -1,0 +1,9 @@
+{
+  "name": "@agent-bus/omp-extension",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "omp": {
+    "extensions": ["./src/index.ts"]
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "name": "agent-message-bus",
+  "version": "0.2.0",
+  "private": true,
+  "description": "LAN message bus: omp agents wake on messages pushed over their connection; humans read and write on the website",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "serve": "bun run packages/cli/src/bin.ts serve",
+    "build:ui": "bun run packages/server/scripts/build-ui.ts",
+    "build": "bun run build:ui",
+    "typecheck": "bun x tsc --noEmit",
+    "test": "bun test tests"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.4",
+    "@types/node": "^26.6.6",
+    "bun-types": "^1.4.4",
+    "typescript": "^5.8.2"
+  }
+}

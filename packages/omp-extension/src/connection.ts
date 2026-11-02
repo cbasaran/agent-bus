@@ -1,0 +1,210 @@
+// Harness-neutral client for the message bus: one agent connection (WS /ws/agent) with reconnect,
+// in-order delivery handling with acks, receipts for this agent's own messages, and the
+// write/send/set calls. Harness bindings decide how a delivery reaches their session.
+import * as path from "node:path";
+import type {
+  AgentClientFrame,
+  AgentServerFrame,
+  FileRef,
+  Message,
+  Participant,
+  PostMessageResponse,
+  ReceiptFrame,
+} from "../../protocol/src/types";
+
+export type Delivery = Extract<AgentServerFrame, { type: "deliver" }>;
+
+export interface BusConnectionOptions {
+  /** Bus base URL, e.g. http://127.0.0.1:7800 */
+  url: string;
+  host: string;
+  harness: string;
+  /** Exactly one of `path` (folder-based harnesses) or `name`. */
+  path?: string;
+  name?: string;
+  /** Called for every delivery, one at a time in seq order; the seq is acked after it resolves. */
+  onDeliver: (delivery: Delivery) => Promise<void>;
+  onJoined?: (id: string) => void;
+  /** A recipient's harness accepted a message this agent wrote. */
+  onReceipt?: (receipt: ReceiptFrame) => void;
+  onLog?: (line: string) => void;
+}
+
+const RECONNECT_MIN_MS = 1000;
+const RECONNECT_MAX_MS = 30_000;
+
+export class BusConnection {
+  /** Bus id assigned by the server; undefined until the first `joined`. */
+  id: string | undefined;
+  participants: Participant[] = [];
+  private socket: WebSocket | null = null;
+  private closed = false;
+  private reconnectDelay = RECONNECT_MIN_MS;
+  private reconnectTimer: Timer | undefined;
+  private deliveryChain: Promise<void> = Promise.resolve();
+  /** `seen` reports made while disconnected; sent after the next join. */
+  private unsentSeen = new Set<number>();
+  private readonly baseUrl: string;
+
+  constructor(private readonly options: BusConnectionOptions) {
+    this.baseUrl = options.url.replace(/\/+$/, "");
+  }
+
+  get connected(): boolean {
+    return this.socket?.readyState === WebSocket.OPEN && this.id !== undefined;
+  }
+
+  connect(): void {
+    if (this.closed) return;
+    const wsUrl = new URL(`${this.baseUrl.replace(/^http/, "ws")}/ws/agent`);
+    wsUrl.searchParams.set("host", this.options.host);
+    wsUrl.searchParams.set("harness", this.options.harness);
+    if (this.options.path) wsUrl.searchParams.set("path", this.options.path);
+    if (this.options.name) wsUrl.searchParams.set("name", this.options.name);
+
+    const socket = new WebSocket(wsUrl.toString());
+    this.socket = socket;
+    socket.addEventListener("message", (event) => {
+      try {
+        this.handleFrame(JSON.parse(String(event.data)) as AgentServerFrame);
+      } catch (err) {
+        this.log(`bad frame: ${(err as Error).message}`);
+      }
+    });
+    socket.addEventListener("close", () => {
+      if (this.socket === socket) this.socket = null;
+      this.scheduleReconnect();
+    });
+    socket.addEventListener("error", () => {
+      // "close" follows and schedules the reconnect.
+    });
+  }
+
+  close(): void {
+    this.closed = true;
+    clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = undefined;
+    this.socket?.close();
+    this.socket = null;
+  }
+
+  private scheduleReconnect(): void {
+    if (this.closed || this.reconnectTimer) return;
+    const delay = this.reconnectDelay;
+    this.reconnectDelay = Math.min(this.reconnectDelay * 2, RECONNECT_MAX_MS);
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = undefined;
+      this.connect();
+    }, delay);
+  }
+
+  private handleFrame(frame: AgentServerFrame): void {
+    switch (frame.type) {
+      case "joined":
+        this.id = frame.id;
+        this.participants = frame.participants;
+        this.reconnectDelay = RECONNECT_MIN_MS;
+        for (const seq of this.unsentSeen) this.markSeen(seq);
+        this.options.onJoined?.(frame.id);
+        return;
+      case "participants":
+        this.participants = frame.participants;
+        return;
+      case "deliver": {
+        const socket = this.socket;
+        this.deliveryChain = this.deliveryChain.then(async () => {
+          try {
+            await this.options.onDeliver(frame);
+            const ack: AgentClientFrame = { type: "ack", seq: frame.message.seq };
+            if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(ack));
+          } catch (err) {
+            // Not acked: the server re-sends it as backlog on the next join.
+            this.log(`delivery of seq ${frame.message.seq} failed: ${(err as Error).message}`);
+          }
+        });
+        return;
+      }
+      case "receipt":
+        this.options.onReceipt?.(frame);
+        return;
+      case "error":
+        this.log(`server: ${frame.error}`);
+        return;
+    }
+  }
+
+  /** Reports that delivery `seq` was handed to the model (queued until reconnected if offline). */
+  markSeen(seq: number): void {
+    const frame: AgentClientFrame = { type: "seen", seq };
+    if (this.socket?.readyState === WebSocket.OPEN && this.id !== undefined) {
+      this.socket.send(JSON.stringify(frame));
+      this.unsentSeen.delete(seq);
+    } else {
+      this.unsentSeen.add(seq);
+    }
+  }
+
+  private requireId(): string {
+    if (!this.connected || !this.id) {
+      throw new Error(`Not connected to the message bus at ${this.baseUrl} (it may be down; retrying in the background).`);
+    }
+    return this.id;
+  }
+
+  private async request<T>(pathname: string, init: RequestInit): Promise<T> {
+    const res = await fetch(`${this.baseUrl}${pathname}`, init);
+    const body = (await res.json().catch(() => ({}))) as T & { error?: string };
+    if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status} from ${pathname}`);
+    return body;
+  }
+
+  /** Posts to an address (`{ to: "@x" }`) or into the conversation of a message being answered (`{ replyToSeq }`). */
+  write(target: { to: string } | { replyToSeq: number }, text: string, fileIds?: string[]): Promise<PostMessageResponse> {
+    const from = this.requireId();
+    return this.request<PostMessageResponse>("/api/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ from, ...target, text, fileIds }),
+    });
+  }
+
+  /** The message with its receipts, after waiting up to `waitMs` for every recipient to have seen it. */
+  async waitForReceipts(seq: number, waitMs: number): Promise<Message> {
+    const res = await this.request<{ message: Message }>(`/api/messages/${seq}?waitMs=${waitMs}&until=seen`, { method: "GET" });
+    return res.message;
+  }
+
+  async uploadFile(filePath: string): Promise<FileRef> {
+    const from = this.requireId();
+    const file = Bun.file(filePath);
+    if (!(await file.exists())) throw new Error(`File not found: ${filePath}`);
+    const qs = new URLSearchParams({ from, name: path.basename(filePath) });
+    const res = await this.request<{ file: FileRef }>(`/api/files?${qs}`, {
+      method: "POST",
+      headers: { "Content-Type": file.type || "application/octet-stream" },
+      body: file,
+    });
+    return res.file;
+  }
+
+  async downloadFile(ref: FileRef, destDir: string): Promise<string> {
+    const res = await fetch(`${this.baseUrl}/api/files/${encodeURIComponent(ref.id)}`);
+    if (!res.ok) throw new Error(`Download of ${ref.name} failed: HTTP ${res.status}`);
+    const dest = path.join(destDir, `${ref.id}-${ref.name.replace(/[\\/]/g, "_")}`);
+    await Bun.write(dest, res);
+    return dest;
+  }
+
+  set(key: string, value: string): Promise<{ participant: Participant }> {
+    const from = this.requireId();
+    return this.request<{ participant: Participant }>("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ from, key, value }),
+    });
+  }
+
+  private log(line: string): void {
+    this.options.onLog?.(line);
+  }
+}

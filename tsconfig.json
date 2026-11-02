@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.base.json",
+  "include": [
+    "packages/protocol/src/**/*.ts",
+    "packages/server/src/**/*.ts",
+    "packages/server/ui/**/*.ts",
+    "packages/server/scripts/**/*.ts",
+    "packages/cli/src/**/*.ts",
+    "packages/omp-extension/src/**/*.ts",
+    "tests/**/*.ts"
+  ]
+}

@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agent Bus</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark">⇄</span>
+        <span class="brand-name">Agent Bus</span>
+      </div>
+      <span id="link-status" class="link-status" data-state="connecting">connecting…</span>
+      <div class="topbar-spacer"></div>
+      <button id="notify-btn" type="button" class="link-btn notify-btn" hidden></button>
+      <label class="profile" title="Who you are on the bus">
+        <span class="profile-label">You are</span>
+        <select id="profile-select"></select>
+      </label>
+    </header>
+
+    <aside class="sidebar">
+      <section class="side-section">
+        <div class="side-heading">
+          <span>Agents</span>
+          <span id="agent-count" class="side-count"></span>
+        </div>
+        <ul id="agent-list" class="side-list"></ul>
+      </section>
+      <section class="side-section">
+        <div class="side-heading">
+          <span>Conversations</span>
+          <button id="new-group-btn" type="button" class="link-btn" title="Start a group with several participants">+ New group</button>
+        </div>
+        <div id="conv-filter" class="conv-filter" hidden></div>
+        <ul id="conversation-list" class="side-list"></ul>
+      </section>
+    </aside>
+
+    <main id="main" class="main">
+      <div class="conv-header">
+        <h1 id="conv-title" class="conv-title"></h1>
+        <div id="conv-subtitle" class="conv-subtitle"></div>
+      </div>
+      <div id="message-scroll" class="message-scroll">
+        <div id="load-earlier" class="load-earlier" hidden>
+          <button id="load-earlier-btn" type="button" class="link-btn">Load earlier messages</button>
+        </div>
+        <ol id="message-list" class="message-list"></ol>
+        <div id="message-empty" class="message-empty" hidden></div>
+      </div>
+      <form id="composer" class="composer" autocomplete="off">
+        <div id="composer-error" class="composer-error" role="alert" hidden></div>
+        <ul id="staged-files" class="staged-files" hidden></ul>
+        <div class="composer-row">
+          <button id="attach-btn" type="button" class="icon-btn" title="Attach files (or drop them here)">📎</button>
+          <input id="file-input" type="file" multiple hidden />
+          <div class="composer-input-wrap">
+            <ul id="mention-menu" class="mention-menu" role="listbox" hidden></ul>
+            <textarea id="composer-input" rows="1" placeholder="Message…  (Enter to send, Shift+Enter for a new line, @ to mention)"></textarea>
+          </div>
+          <button id="send-btn" type="submit" class="send-btn">Send</button>
+        </div>
+      </form>
+      <div id="drop-overlay" class="drop-overlay" hidden>Drop files to attach</div>
+    </main>
+  </div>
+
+  <dialog id="lightbox" class="lightbox">
+    <img id="lightbox-img" alt="" />
+    <div class="lightbox-bar">
+      <span id="lightbox-name"></span>
+      <a id="lightbox-download" class="link-btn">Download</a>
+      <span class="lightbox-hint">click or Esc to close</span>
+    </div>
+  </dialog>
+
+  <dialog id="profile-dialog" class="dialog">
+    <h2>Who are you?</h2>
+    <p class="dialog-hint">Pick your name. It is remembered in this browser and can be switched in the header.</p>
+    <div id="profile-choices" class="profile-choices"></div>
+  </dialog>
+
+  <dialog id="group-dialog" class="dialog">
+    <form id="group-form" method="dialog">
+      <h2>New group</h2>
+      <p class="dialog-hint">Pick the participants. You are included automatically.</p>
+      <ul id="group-choices" class="group-choices"></ul>
+      <div id="group-error" class="composer-error" hidden></div>
+      <div class="dialog-actions">
+        <button type="button" id="group-cancel" class="btn">Cancel</button>
+        <button type="submit" id="group-open" class="btn btn-primary">Open conversation</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

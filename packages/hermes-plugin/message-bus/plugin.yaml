@@ -1,0 +1,8 @@
+name: message-bus
+version: 0.1.0
+description: "LAN message bus: joins as this agent (by name), delivers messages into the configured gateway session like composer input, and provides the message-bus tool (write / send / set)."
+author: "message-bus (~/code/message-bus/packages/hermes-plugin)"
+provides_tools:
+  - message-bus
+provides_hooks:
+  - pre_llm_call

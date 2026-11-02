@@ -1,0 +1,42 @@
+{
+  "manifest_version": 3,
+  "name": "Agent Message Bus",
+  "version": "0.1.0",
+  "description": "Bridge Web Chat UIs (ChatGPT, Claude, Gemini, Custom) onto the central LAN Agent Message Bus.",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting",
+    "tabs",
+    "alarms",
+    "sidePanel"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Agent Message Bus",
+    "default_popup": "panel.html"
+  },
+  "side_panel": {
+    "default_path": "panel.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*",
+        "https://claude.ai/*",
+        "https://gemini.google.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}
