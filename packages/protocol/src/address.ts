@@ -2,7 +2,10 @@ import type { AgentSettings, Conversation, ParticipantKind, Quote, Receipt } fro
 
 export type ParsedAddress = { kind: "all" } | { kind: "ids"; ids: string[] };
 
-const ID_RE = /^[a-z0-9][a-z0-9_-]{0,47}$/;
+const SLUG = "[a-z0-9][a-z0-9_-]*";
+/** One slug, or `base@qualifier` for an agent whose folder (or name) is already taken. Max 48 chars. */
+const ID_RE = new RegExp(`^${SLUG}(?:@${SLUG})?$`);
+const MAX_ID_CHARS = 48;
 
 /**
  * Parses a write target: "@all", "@id", "@{id1, id2}" (the leading "@" and the ones
@@ -19,7 +22,7 @@ export function parseAddress(input: string): ParsedAddress {
   if (ids.length === 0) throw new Error(`Empty address "${input}"`);
   for (const id of ids) {
     if (id === "all") throw new Error(`"@all" cannot be combined with other ids in "${input}"`);
-    if (!ID_RE.test(id)) throw new Error(`Invalid id "${id}" in "${input}"`);
+    if (!ID_RE.test(id) || id.length > MAX_ID_CHARS) throw new Error(`Invalid id "${id}" in "${input}"`);
   }
   if (ids.length > 1 && raw === inner) {
     throw new Error(`Write several ids as @{id1,id2}, got "${input}"`);
@@ -61,22 +64,34 @@ export function slugifyId(input: string): string {
     .slice(0, 48);
 }
 
+/** How an agent identifies itself on join: by project folder or by name, always with its host. */
+export type AgentIdentity = { host: string; path: string } | { host: string; name: string };
+
 /**
- * Candidate agent ids for a project, most preferred first: folder name, then parent-folder
- * prefixed names, then the host-suffixed folder name. The server takes the first one not held
- * by a different host+path and falls back to a numeric suffix.
+ * An agent's full address, most general part first: host (first DNS label), then the project path from
+ * the root, or the name for agents that join by name.
  */
-export function agentIdCandidates(projectPath: string, host: string): string[] {
-  const parts = projectPath.split(/[\\/]+/).filter(Boolean);
-  const out: string[] = [];
-  for (let n = 1; n <= Math.min(parts.length, 3); n++) {
-    const id = slugifyId(parts.slice(-n).join("-"));
-    if (id && !out.includes(id)) out.push(id);
-  }
-  const base = out[0] ?? "agent";
-  const withHost = slugifyId(`${base}-${host}`);
-  if (withHost && !out.includes(withHost)) out.push(withHost);
-  return out.length > 0 ? out : ["agent"];
+export function canonicalAddress(identity: AgentIdentity): string[] {
+  const host = identity.host.split(".")[0] || identity.host;
+  const rest = "path" in identity ? identity.path.split(/[\\/]+/).filter(Boolean) : [identity.name];
+  return [host, ...rest];
+}
+
+/** Preferred id: the folder name (or the name). "" when it has no usable characters. */
+export function baseAgentId(identity: AgentIdentity): string {
+  return slugifyId(canonicalAddress(identity).at(-1) ?? "");
+}
+
+/**
+ * Id for an agent whose base id is already held: `base@<first part of its canonical address that differs
+ * from the holder's>`, e.g. `gpudash@macbook-pro-2` (other host) or `gpudash@t7` (same host, other tree).
+ * `holder` undefined (the base id belongs to a human or is reserved): qualified by host.
+ */
+export function qualifiedAgentId(base: string, mine: readonly string[], holder: readonly string[] | undefined): string | undefined {
+  const index = holder === undefined ? 0 : mine.findIndex((part, i) => part !== holder[i]);
+  const qualifier = slugifyId(mine[index] ?? "").slice(0, 24).replace(/[-_]+$/, "");
+  if (!qualifier) return undefined;
+  return `${base.slice(0, MAX_ID_CHARS - qualifier.length - 1).replace(/[-_]+$/, "")}@${qualifier}`;
 }
 
 export function formatBytes(bytes: number): string {

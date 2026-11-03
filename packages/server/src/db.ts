@@ -1,9 +1,13 @@
 import { Database } from "bun:sqlite";
 import {
   ALL_CONVERSATION_ID,
+  baseAgentId,
+  canonicalAddress,
   DEFAULT_AGENT_SETTINGS,
   isJsonObject,
+  qualifiedAgentId,
   QUOTE_TEXT_CHARS,
+  type AgentIdentity,
   type AgentSettings,
   type Conversation,
   type FileRef,
@@ -26,9 +30,6 @@ export interface ParticipantRecord {
   createdAt: number;
   lastSeenAt: number;
 }
-
-/** How an agent identifies itself on join: by project folder or by name, always with its host. */
-export type AgentIdentity = { host: string; path: string } | { host: string; name: string };
 
 export interface JoinResult {
   participant: ParticipantRecord;
@@ -335,14 +336,13 @@ export class BusDatabase {
   }
 
   /**
-   * Finds or creates the agent for `identity`. A new agent takes the first candidate id nobody holds
-   * (ids held by humans, by other agents, or listed in `reservedIds` are skipped), else
-   * `${candidates[0]}-2`, `-3`, ….
+   * Finds or creates the agent for `identity`. A new agent takes its folder name (or name) if free, else
+   * `base@<first differing part of its canonical address>` (see `qualifiedAgentId`), else a numeric suffix.
+   * Ids held by humans or listed in `reservedIds` count as taken.
    */
   joinAgent(
     identity: AgentIdentity,
     harness: string | null,
-    candidates: readonly string[],
     reservedIds: ReadonlySet<string>,
     now = Date.now()
   ): JoinResult {
@@ -369,7 +369,7 @@ export class BusDatabase {
         };
       }
 
-      const id = this.pickFreeId(candidates, reservedIds);
+      const id = this.pickId(identity, reservedIds);
       const deliveredSeq = this.maxSeq();
       this.db
         .query(
@@ -393,18 +393,32 @@ export class BusDatabase {
     })();
   }
 
-  private pickFreeId(candidates: readonly string[], reservedIds: ReadonlySet<string>): string {
+  private pickId(identity: AgentIdentity, reservedIds: ReadonlySet<string>): string {
     const taken = (id: string): boolean =>
       id === ALL_CONVERSATION_ID ||
       reservedIds.has(id) ||
       this.db.query<{ id: string }, [string]>("SELECT id FROM participants WHERE id = ?1").get(id) !== null;
-    for (const candidate of candidates) {
-      if (!taken(candidate)) return candidate;
-    }
-    const base = candidates[0] ?? "agent";
+    const base = baseAgentId(identity) || "agent";
+    if (!taken(base)) return base;
+    const holder = this.db
+      .query<ParticipantRow, [string]>("SELECT * FROM participants WHERE id = ?1 AND kind = 'agent'")
+      .get(base);
+    const holderIdentity: AgentIdentity | undefined =
+      holder?.host == null
+        ? undefined
+        : holder.path !== null
+          ? { host: holder.host, path: holder.path }
+          : { host: holder.host, name: holder.name ?? "" };
+    const qualified = qualifiedAgentId(
+      base,
+      canonicalAddress(identity),
+      holderIdentity && canonicalAddress(holderIdentity)
+    );
+    if (qualified && !taken(qualified)) return qualified;
+    const stem = qualified ?? base;
     for (let n = 2; ; n++) {
       const suffix = `-${n}`;
-      const id = `${base.slice(0, MAX_ID_LENGTH - suffix.length)}${suffix}`;
+      const id = `${stem.slice(0, MAX_ID_LENGTH - suffix.length)}${suffix}`;
       if (!taken(id)) return id;
     }
   }

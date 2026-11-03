@@ -1034,7 +1034,7 @@ function setReplyTo(message: Message | undefined): void {
 
 dom.replyCancel.addEventListener("click", () => setReplyTo(undefined));
 
-const MENTION_RE = /(^|[\s({,])(@(?:\{[^}\n]*\}|[a-z0-9][a-z0-9_-]*))/gi;
+const MENTION_RE = /(^|[\s({,])(@(?:\{[^}\n]*\}|[a-z0-9][a-z0-9_-]*(?:@[a-z0-9][a-z0-9_-]*)?))/gi;
 
 /** Text with newlines preserved (CSS pre-wrap) and @mentions highlighted. */
 function renderText(text: string): HTMLDivElement {
@@ -1316,7 +1316,7 @@ function updateMention(): void {
     return;
   }
   const before = dom.input.value.slice(0, caret);
-  const match = /(^|[\s({,])@([a-z0-9_-]*)$/i.exec(before);
+  const match = /(^|[\s({,])@([a-z0-9_-]*(?:@[a-z0-9_-]*)?)$/i.exec(before);
   if (!match) {
     closeMention();
     return;

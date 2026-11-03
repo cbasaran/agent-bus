@@ -147,18 +147,25 @@ describe("agent ids", () => {
     expect(again.id).toBe("alpha");
   });
 
-  test("two folders with the same name get distinct ids", async () => {
+  test("an id already held is qualified by the first part of the address that differs", async () => {
     const a = await joinPath("/tmp/a/proj");
     const b = await joinPath("/tmp/b/proj");
     expect(a.id).toBe("proj");
-    expect(b.id).toBe("b-proj");
-    const otherHost = await joinPath("/tmp/a/proj", "h2");
-    expect(otherHost.id).toBe("a-proj");
+    expect(b.id).toBe("proj@b");
+    const mac = await joinPath("/Users/cbasaran/code/proj", "macbook-pro-2.home");
+    expect(mac.id).toBe("proj@macbook-pro-2");
+    // Same qualifier again (a third tree under /tmp/b): numeric suffix.
+    const deeper = await joinPath("/tmp/b/x/proj");
+    expect(deeper.id).toBe("proj@b-2");
+    // The qualified id is an address like any other.
+    const sent = await send({ from: "can", to: "@{proj@macbook-pro-2,proj}", text: "both of you" });
+    expect(sent.conversation.addressed).toEqual(["can", "proj", "proj@macbook-pro-2"]);
+    expect((await mac.client.take("deliver")).replyTo).toBe("@{can,proj}");
   });
 
   test("human ids are never taken by agents", async () => {
     const agent = await joinPath("/home/someone/can");
-    expect(agent.id).toBe("someone-can");
+    expect(agent.id).toBe("can@h1");
     const participants = (await state()).participants;
     expect(participants.find((p) => p.id === "can")?.kind).toBe("human");
   });
@@ -167,9 +174,9 @@ describe("agent ids", () => {
     const zeki = await joinAgent({ host: "omarchy", harness: "hermes", name: "zeki" });
     expect(zeki.id).toBe("zeki");
     const folder = await joinPath("/srv/zeki", "omarchy");
-    expect(folder.id).toBe("srv-zeki");
+    expect(folder.id).toBe("zeki@srv");
     const otherHost = await joinAgent({ host: "h2", harness: "hermes", name: "zeki" });
-    expect(otherHost.id).toBe("zeki-h2");
+    expect(otherHost.id).toBe("zeki@h2");
     await leave(zeki.client);
     const again = await joinAgent({ host: "omarchy", harness: "hermes", name: "zeki" });
     expect(again.id).toBe("zeki");

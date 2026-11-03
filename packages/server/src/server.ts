@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, renameSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import {
-  agentIdCandidates,
+  baseAgentId,
   ALL_CONVERSATION_ID,
   DEFAULT_BUS_PORT,
   isJsonObject,
@@ -25,8 +25,9 @@ import {
   type Receipt,
   type ReceiptFrame,
   type ViewerServerFrame,
+  type AgentIdentity,
 } from "@agent-bus/protocol";
-import { BusDatabase, type AgentIdentity, type ParticipantRecord } from "./db";
+import { BusDatabase, type ParticipantRecord } from "./db";
 import { resolveLanAddresses } from "./lan";
 
 export interface BusServerOptions {
@@ -270,17 +271,11 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
     }
     const identity: AgentIdentity =
       data.path !== null ? { host: data.host, path: data.path } : { host: data.host, name: data.name ?? "" };
-    const candidates =
-      "path" in identity
-        ? agentIdCandidates(identity.path, identity.host)
-        : [slugifyId(identity.name), slugifyId(`${identity.name}-${identity.host}`)].filter(
-            (id, i, all) => id.length > 0 && all.indexOf(id) === i
-          );
-    if (candidates.length === 0) {
-      fail(`Name "${data.name ?? ""}" has no usable id characters`);
+    if ("name" in identity && baseAgentId(identity) === "") {
+      fail(`Name "${identity.name}" has no usable id characters`);
       return;
     }
-    const { participant, isNew } = db.joinAgent(identity, data.harness, candidates, humanSet);
+    const { participant, isNew } = db.joinAgent(identity, data.harness, humanSet);
     data.id = participant.id;
     let sockets = agentSockets.get(participant.id);
     if (!sockets) {
