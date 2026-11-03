@@ -382,10 +382,28 @@ function notify(message: Message, conv: Conversation): void {
 
 let titleBase = "Agent Bus";
 
+/** Tab icon: the header's ⇄ mark; a red dot while messages for me are unread. */
+function faviconHref(attention: boolean): string {
+  const dot = attention ? '<circle cx="26" cy="6" r="6" fill="#e5484d" stroke="#fff" stroke-width="2"/>' : "";
+  const svg =
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">' +
+    '<rect x="1" y="1" width="30" height="30" rx="7" fill="#3563e9"/>' +
+    '<path d="M8 12h14l-4-4M24 20H10l4 4" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>' +
+    dot +
+    "</svg>";
+  return `data:image/svg+xml,${encodeURIComponent(svg)}`;
+}
+
+let faviconState: boolean | undefined;
+
 function applyTitle(): void {
   let n = 0;
   for (const count of state.attention.values()) n += count;
   document.title = n > 0 ? `● (${n}) ${titleBase}` : titleBase;
+  if (faviconState !== n > 0) {
+    faviconState = n > 0;
+    el<HTMLLinkElement>("favicon").href = faviconHref(faviconState);
+  }
 }
 
 function renderProfileSelect(): void {
