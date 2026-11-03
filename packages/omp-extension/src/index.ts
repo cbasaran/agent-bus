@@ -98,7 +98,7 @@ function isUnderTempDir(dir: string): boolean {
 export function formatDelivery(delivery: Delivery, savedFiles: string[]): string {
   const { message, conversation, replyTo } = delivery;
   const where = conversation.kind === "all" ? "@all" : formatAddress(conversation.addressed);
-  const lines = [deliveryHeader(message.seq, message.from, where)];
+  const lines = [deliveryHeader(message.seq, message.from, where, message.createdAt)];
   if (message.quote) lines.push(quoteLine(message.quote));
   if (message.text) lines.push(message.text);
   message.files.forEach((file, i) => {

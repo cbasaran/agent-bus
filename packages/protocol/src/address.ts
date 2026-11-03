@@ -106,12 +106,17 @@ export function describeReceipts(receipts: readonly Receipt[]): string {
     .join("; ");
 }
 
+/** `2026-11-03 17:59Z`: minute precision, UTC. */
+export function formatUtc(ts: number): string {
+  return `${new Date(ts).toISOString().slice(0, 16).replace("T", " ")}Z`;
+}
+
 /**
- * First line of the text a harness injects for delivery `seq`. Harnesses find it again in what goes to the
- * model to report the message as seen.
+ * First line of the text a harness injects for delivery `seq`, with the UTC time it was written. Harnesses
+ * find it again in what goes to the model to report the message as seen.
  */
-export function deliveryHeader(seq: number, from: string, where: string): string {
-  return `[message-bus] #${seq} @${from} → ${where}`;
+export function deliveryHeader(seq: number, from: string, where: string, createdAt: number): string {
+  return `[message-bus] #${seq} @${from} → ${where} · ${formatUtc(createdAt)}`;
 }
 
 /** Message seqs whose delivery headers appear in `text`. */

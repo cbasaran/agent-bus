@@ -181,10 +181,11 @@ test("delivers like the composer: idle starts a turn, busy queues a follow-up, a
   const alpha = await startSession("alpha");
   const beta = await rawAgent("beta");
 
-  await post({ from: "can", to: "@all", text: "standup in 5" });
+  const { message: standup } = await post({ from: "can", to: "@all", text: "standup in 5" });
+  const sent = `${new Date(standup.createdAt).toISOString().slice(0, 16).replace("T", " ")}Z`;
   expect(await alpha.injectedWith("standup in 5")).toEqual({
     via: "user",
-    content: "[message-bus] #1 @can → @all\nstandup in 5\n(Reply only if they need something from you: message-bus reply, message_id 1 → @all.)",
+    content: `[message-bus] #1 @can → @all · ${sent}\nstandup in 5\n(Reply only if they need something from you: message-bus reply, message_id 1 → @all.)`,
     deliverAs: undefined,
   });
 
