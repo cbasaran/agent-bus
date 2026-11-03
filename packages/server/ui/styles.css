@@ -1,24 +1,34 @@
 :root {
-  --bg: #f6f7f9;
-  --panel: #ffffff;
-  --sidebar: #1f2430;
-  --sidebar-hover: #2a3040;
-  --sidebar-active: #3b4458;
+  color-scheme: dark;
+  --bg: #161a22;
+  --panel: #1c212b;
+  --panel-raised: #232a36;
+  --hover: #202631;
+  --input: #12161d;
+  --sidebar: #11151c;
+  --sidebar-hover: #1c222d;
+  --sidebar-active: #2a3243;
   --sidebar-text: #d7dbe3;
   --sidebar-muted: #8c94a6;
-  --text: #1d2330;
-  --muted: #687083;
-  --border: #e2e5eb;
-  --accent: #3563e9;
-  --accent-soft: #e8eefd;
-  --human: #b45309;
-  --human-soft: #fdf3e4;
-  --agent: #2563eb;
-  --agent-soft: #e8effd;
+  --text: #dde2ea;
+  --muted: #8f98aa;
+  --border: #2c3341;
+  --accent: #5b8cff;
+  --accent-strong: #4a7af0;
+  --accent-soft: #233357;
+  --human: #f0a456;
+  --human-soft: #2b2419;
+  --human-soft-hover: #33291c;
+  --agent: #7aa7ff;
+  --agent-soft: #1f2a42;
   --online: #22c55e;
   --offline: #6b7280;
-  --error: #b42318;
-  --error-soft: #fdecea;
+  --error: #ff8a80;
+  --error-soft: #3a1e1e;
+  --success: #5cc98a;
+  --warning: #e3a547;
+  --highlight: #4a3f14;
+  --shadow: rgba(0, 0, 0, 0.45);
   --radius: 8px;
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, sans-serif;
   font-size: 15px;
@@ -458,7 +468,7 @@ button:disabled {
 }
 
 .msg:hover {
-  background: #fafbfc;
+  background: var(--hover);
 }
 
 .msg-continued {
@@ -478,7 +488,7 @@ button:disabled {
 }
 
 .msg-mine:hover {
-  background: #fbeedb;
+  background: var(--human-soft-hover);
 }
 
 .msg-head {
@@ -528,7 +538,7 @@ button:disabled {
 }
 
 .msg-mine .kind-human {
-  background: #fff;
+  background: var(--panel-raised);
 }
 
 .msg-time {
@@ -548,7 +558,7 @@ button:disabled {
 }
 
 .mention-me {
-  background: #fff3c4;
+  background: var(--highlight);
   border-radius: 3px;
   padding: 0 2px;
 }
@@ -683,7 +693,7 @@ button:disabled {
 }
 
 .msg-receipts.receipts-seen {
-  color: #2f8a4c;
+  color: var(--success);
 }
 
 .msg-receipts.receipts-delivered {
@@ -691,7 +701,7 @@ button:disabled {
 }
 
 .msg-receipts.receipts-pending {
-  color: #a8640c;
+  color: var(--warning);
 }
 
 /* ---- Composer ---- */
@@ -744,7 +754,7 @@ button:disabled {
 }
 
 .staged-remove:hover:not(:disabled) {
-  background: #fff;
+  background: var(--panel-raised);
   color: var(--text);
 }
 
@@ -769,7 +779,8 @@ button:disabled {
   padding: 9px 12px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: #fbfcfd;
+  background: var(--input);
+  color: var(--text);
   line-height: 1.4;
 }
 
@@ -777,7 +788,7 @@ button:disabled {
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
-  background: #fff;
+  background: var(--input);
 }
 
 .icon-btn {
@@ -786,7 +797,8 @@ button:disabled {
   height: 40px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: #fff;
+  background: var(--panel-raised);
+  color: var(--text);
   font-size: 17px;
 }
 
@@ -806,7 +818,8 @@ button:disabled {
 }
 
 .send-btn:disabled {
-  background: #a9b8e8;
+  background: var(--accent-soft);
+  color: var(--muted);
 }
 
 .mention-menu {
@@ -819,10 +832,10 @@ button:disabled {
   margin: 0;
   padding: 4px;
   list-style: none;
-  background: #fff;
+  background: var(--panel-raised);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  box-shadow: 0 8px 24px rgba(20, 30, 50, 0.16);
+  box-shadow: 0 8px 24px var(--shadow);
 }
 
 .mention-item {
@@ -858,7 +871,7 @@ button:disabled {
   place-items: center;
   border: 2px dashed var(--accent);
   border-radius: 12px;
-  background: rgba(232, 238, 253, 0.9);
+  background: rgba(22, 26, 34, 0.9);
   color: var(--accent);
   font-size: 18px;
   font-weight: 650;
@@ -947,7 +960,8 @@ button:disabled {
   padding: 7px 14px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: #fff;
+  background: var(--panel-raised);
+  color: var(--text);
   font-weight: 600;
 }
 
@@ -962,7 +976,7 @@ button:disabled {
 }
 
 .btn-primary:hover {
-  background: #2952c8;
+  background: var(--accent-strong);
 }
 
 /* ---- Narrow screens ---- */
