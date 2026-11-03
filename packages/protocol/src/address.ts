@@ -1,4 +1,4 @@
-import type { AgentSettings, Conversation, ParticipantKind, Receipt } from "./types";
+import type { AgentSettings, Conversation, ParticipantKind, Quote, Receipt } from "./types";
 
 export type ParsedAddress = { kind: "all" } | { kind: "ids"; ids: string[] };
 
@@ -117,4 +117,12 @@ export function deliveryHeader(seq: number, from: string, where: string): string
 /** Message seqs whose delivery headers appear in `text`. */
 export function deliveryHeaderSeqs(text: string): number[] {
   return Array.from(text.matchAll(/\[message-bus\] #(\d+) @/g), (m) => Number(m[1]));
+}
+
+/** One-line rendering of a reply's quote for agents: `↩ re #12 @can: start of the text…`. */
+export function quoteLine(quote: Quote): string {
+  const oneLine = quote.text.replace(/\s+/g, " ").trim();
+  const text = oneLine.length > 160 ? `${oneLine.slice(0, 159)}…` : oneLine;
+  const files = quote.files > 0 ? ` [${quote.files} file${quote.files === 1 ? "" : "s"}]` : "";
+  return `↩ re #${quote.seq} @${quote.from}: ${text || "(no text)"}${files}`;
 }

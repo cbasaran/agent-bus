@@ -6,7 +6,7 @@
 import { realpathSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { deliveryHeader, deliveryHeaderSeqs, describeReceipts, formatAddress } from "../../protocol/src/address";
+import { deliveryHeader, deliveryHeaderSeqs, describeReceipts, formatAddress, quoteLine } from "../../protocol/src/address";
 import { DEFAULT_BUS_PORT, type FileRef, type PostMessageResponse, type ReceiptFrame } from "../../protocol/src/types";
 import { BusConnection, type Delivery } from "./connection";
 
@@ -99,6 +99,7 @@ export function formatDelivery(delivery: Delivery, savedFiles: string[]): string
   const { message, conversation, replyTo } = delivery;
   const where = conversation.kind === "all" ? "@all" : formatAddress(conversation.addressed);
   const lines = [deliveryHeader(message.seq, message.from, where)];
+  if (message.quote) lines.push(quoteLine(message.quote));
   if (message.text) lines.push(message.text);
   message.files.forEach((file, i) => {
     lines.push(`File: ${savedFiles[i] ?? file.name} (${file.name}, ${file.size} B, sha256 ${file.sha256.slice(0, 12)}…)`);

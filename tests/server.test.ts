@@ -568,3 +568,38 @@ describe("agents that never took part", () => {
     expect((await state()).participants.filter((p) => p.kind === "agent").map((p) => p.id)).toEqual(["active"]);
   });
 });
+
+describe("reply quotes", () => {
+  test("a replyToSeq message carries a quote of the original, in pages, deliveries and after restart", async () => {
+    const alpha = await joinPath("/tmp/x/alpha");
+    const long = "x".repeat(400);
+    const original = (await send({ from: "can", to: "@alpha", text: `please check run 7 ${long}` })).message;
+    await alpha.client.take("deliver");
+
+    const reply = await send({ from: "alpha", replyToSeq: original.seq, text: "run 7 is fine" });
+    expect(reply.message.quote?.seq).toBe(original.seq);
+    expect(reply.message.quote?.from).toBe("can");
+    expect(reply.message.quote?.text.length).toBe(280);
+    expect(reply.message.quote?.text.endsWith("…")).toBe(true);
+    expect(reply.message.quote?.files).toBe(0);
+
+    // Agents receive the quote with the delivery.
+    const human = await send({ from: "can", replyToSeq: reply.message.seq, text: "thanks" });
+    const delivered = await alpha.client.take("deliver");
+    expect(delivered.message.seq).toBe(human.message.seq);
+    expect(delivered.message.quote).toEqual({ seq: reply.message.seq, from: "alpha", text: "run 7 is fine", files: 0 });
+
+    // Ordinary messages have no quote; pages carry quotes.
+    const plain = await send({ from: "can", to: "@alpha", text: "no quote" });
+    expect(plain.message.quote).toBeUndefined();
+    const page = (await (await fetch(`${bus.url}/api/conversations/${original.conversationId}/messages`)).json()) as MessagesResponse;
+    expect(page.messages.map((m) => m.quote?.seq ?? null)).toEqual([null, original.seq, reply.message.seq, null]);
+
+    // The quote survives a restart (it is stored as the replied-to number and resolved on read).
+    clients.splice(clients.indexOf(alpha.client), 1);
+    await bus.stop();
+    bus = createBusServer({ host: "127.0.0.1", port: 0, dataDir, humans: ["can", "umit"] });
+    const after = (await (await fetch(`${bus.url}/api/messages/${human.message.seq}`)).json()) as { message: Message };
+    expect(after.message.quote?.seq).toBe(reply.message.seq);
+  });
+});

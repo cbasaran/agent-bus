@@ -70,7 +70,20 @@ export interface Message {
    * Empty for messages written before receipts existed.
    */
   receipts: Receipt[];
+  /** Set when the message was written as a reply to message `quote.seq` (same conversation). */
+  quote?: Quote;
 }
+
+/** The message a reply answers: who wrote it and the start of its text (QUOTE_TEXT_CHARS). */
+export interface Quote {
+  seq: number;
+  from: string;
+  text: string;
+  /** Number of files the quoted message carried. */
+  files: number;
+}
+
+export const QUOTE_TEXT_CHARS = 280;
 
 export interface Receipt {
   to: string;

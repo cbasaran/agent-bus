@@ -3,11 +3,13 @@ import {
   ALL_CONVERSATION_ID,
   DEFAULT_AGENT_SETTINGS,
   isJsonObject,
+  QUOTE_TEXT_CHARS,
   type AgentSettings,
   type Conversation,
   type FileRef,
   type Message,
   type ParticipantKind,
+  type Quote,
   type Receipt,
 } from "@agent-bus/protocol";
 
@@ -43,6 +45,8 @@ export interface NewMessage {
   createdAt: number;
   /** Agent ids the message is sent to (receipts start undelivered). */
   recipients: string[];
+  /** The message this one replies to (same conversation). */
+  replyToSeq?: number;
 }
 
 interface ReceiptRow {
@@ -82,6 +86,7 @@ interface MessageRow {
   text: string;
   files_json: string;
   created_at: number;
+  reply_to_seq: number | null;
 }
 
 interface FileRow {
@@ -218,7 +223,7 @@ function toParticipant(row: ParticipantRow): ParticipantRecord {
   };
 }
 
-function toMessage(row: MessageRow, receipts: Receipt[]): Message {
+function toMessage(row: MessageRow, receipts: Receipt[], quote: Quote | undefined): Message {
   return {
     seq: row.seq,
     id: row.id,
@@ -229,6 +234,7 @@ function toMessage(row: MessageRow, receipts: Receipt[]): Message {
     files: parseFiles(row.files_json),
     createdAt: row.created_at,
     receipts,
+    ...(quote ? { quote } : {}),
   };
 }
 
@@ -252,6 +258,11 @@ export class BusDatabase {
     const receiptColumns = this.db.query<{ name: string }, []>("PRAGMA table_info(receipts)").all();
     if (!receiptColumns.some((c) => c.name === "seen_at")) {
       this.db.exec("ALTER TABLE receipts ADD COLUMN seen_at INTEGER");
+    }
+    // Databases created before reply quotes lack the column.
+    const messageColumns = this.db.query<{ name: string }, []>("PRAGMA table_info(messages)").all();
+    if (!messageColumns.some((c) => c.name === "reply_to_seq")) {
+      this.db.exec("ALTER TABLE messages ADD COLUMN reply_to_seq INTEGER");
     }
     this.seed(humans, now);
   }
@@ -516,8 +527,8 @@ export class BusDatabase {
     return this.db.transaction((): Message => {
       const result = this.db
         .query(
-          `INSERT INTO messages (id, conversation_id, from_id, from_kind, text, files_json, created_at)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`
+          `INSERT INTO messages (id, conversation_id, from_id, from_kind, text, files_json, created_at, reply_to_seq)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`
         )
         .run(
           id,
@@ -526,7 +537,8 @@ export class BusDatabase {
           input.fromKind,
           input.text,
           JSON.stringify(input.files),
-          input.createdAt
+          input.createdAt,
+          input.replyToSeq ?? null
         );
       const seq = Number(result.lastInsertRowid);
       const addReceipt = this.db.query("INSERT INTO receipts (seq, recipient, delivered_at) VALUES (?1, ?2, NULL)");
@@ -534,6 +546,7 @@ export class BusDatabase {
       this.db
         .query("UPDATE conversations SET last_message_at = MAX(last_message_at, ?2) WHERE id = ?1")
         .run(input.conversationId, input.createdAt);
+      const quote = input.replyToSeq === undefined ? undefined : this.quotesFor([input.replyToSeq]).get(input.replyToSeq);
       return {
         seq,
         id,
@@ -544,8 +557,25 @@ export class BusDatabase {
         files: input.files,
         createdAt: input.createdAt,
         receipts: input.recipients.map((to) => ({ to, deliveredAt: null, seenAt: null })),
+        ...(quote ? { quote } : {}),
       };
     })();
+  }
+
+  /** Quotes for the given message seqs (one query). */
+  private quotesFor(seqs: number[]): Map<number, Quote> {
+    const quotes = new Map<number, Quote>();
+    if (seqs.length === 0) return quotes;
+    const rows = this.db
+      .query<{ seq: number; from_id: string; text: string; files_json: string }, [string]>(
+        "SELECT seq, from_id, text, files_json FROM messages WHERE seq IN (SELECT value FROM json_each(?1))"
+      )
+      .all(JSON.stringify(seqs));
+    for (const r of rows) {
+      const text = r.text.length > QUOTE_TEXT_CHARS ? `${r.text.slice(0, QUOTE_TEXT_CHARS - 1)}…` : r.text;
+      quotes.set(r.seq, { seq: r.seq, from: r.from_id, text, files: parseFiles(r.files_json).length });
+    }
+    return quotes;
   }
 
   /** Attaches each row's receipts (one query for the batch). */
@@ -563,7 +593,12 @@ export class BusDatabase {
       if (!list) bySeq.set(r.seq, (list = []));
       list.push({ to: r.recipient, deliveredAt: r.delivered_at, seenAt: r.seen_at });
     }
-    return rows.map((row) => toMessage(row, bySeq.get(row.seq) ?? []));
+    const quotes = this.quotesFor(
+      Array.from(new Set(rows.map((r) => r.reply_to_seq).filter((s): s is number => s !== null)))
+    );
+    return rows.map((row) =>
+      toMessage(row, bySeq.get(row.seq) ?? [], row.reply_to_seq === null ? undefined : quotes.get(row.reply_to_seq))
+    );
   }
 
   getMessage(seq: number): Message | null {

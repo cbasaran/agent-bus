@@ -83,6 +83,15 @@ def _format_address(ids: list[str]) -> str:
     return f"@{ids[0]}" if len(ids) == 1 else "@{" + ",".join(ids) + "}"
 
 
+def quote_line(quote: dict) -> str:
+    """Same text as quoteLine in packages/protocol/src/address.ts."""
+    one_line = " ".join(str(quote.get("text") or "").split())
+    text = one_line if len(one_line) <= 160 else one_line[:159] + "…"
+    n = int(quote.get("files") or 0)
+    files = f" [{n} file{'' if n == 1 else 's'}]" if n > 0 else ""
+    return f"↩ re #{quote['seq']} @{quote['from']}: {text or '(no text)'}{files}"
+
+
 def describe_receipts(receipts: list[dict]) -> str:
     """Same text as describeReceipts in packages/protocol/src/address.ts."""
     if not receipts:
@@ -107,6 +116,8 @@ def format_delivery(frame: dict, saved_files: list[str]) -> str:
     where = "@all" if conversation["kind"] == "all" else _format_address(conversation["addressed"])
     # Header format shared with deliveryHeader in packages/protocol/src/address.ts; pre_llm_call finds it again.
     lines = [f"[message-bus] #{message['seq']} @{message['from']} → {where}"]
+    if message.get("quote"):
+        lines.append(quote_line(message["quote"]))
     if message.get("text"):
         lines.append(message["text"])
     for i, f in enumerate(message.get("files") or []):

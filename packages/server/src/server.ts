@@ -409,7 +409,8 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
     if (!writer) {
       throw new HttpError(400, `Unknown participant "${body.from}". Known ids: ${knownIds().join(", ")}`);
     }
-    // A reply goes to the conversation of the message it answers; from there it is a conversationId post.
+    // A reply goes to the conversation of the message it answers (then it is a conversationId post) and quotes it.
+    let replyToSeq: number | undefined;
     if (body.replyToSeq !== undefined && body.replyToSeq !== null) {
       if (typeof body.replyToSeq !== "number" || !Number.isSafeInteger(body.replyToSeq)) {
         throw new HttpError(400, "replyToSeq must be a message number");
@@ -420,6 +421,7 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
       const original = db.getMessage(body.replyToSeq);
       if (!original) throw new HttpError(404, `Unknown message #${body.replyToSeq}`);
       body.conversationId = original.conversationId;
+      replyToSeq = original.seq;
     }
     const hasTo = body.to !== undefined && body.to !== null;
     const hasConversation = body.conversationId !== undefined && body.conversationId !== null;
@@ -491,6 +493,7 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
       files,
       createdAt: now,
       recipients: recipientsFor(conversation, writer.id).map((p) => p.id),
+      replyToSeq,
     });
     if (writer.kind === "human") db.touchParticipant(writer.id, now);
     const updated = db.getConversation(conversation.id);

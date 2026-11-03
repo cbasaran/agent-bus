@@ -10,6 +10,7 @@ import {
   type Participant,
   type PostMessageRequest,
   type PostMessageResponse,
+  type Quote,
   type ReceiptFrame,
   type StateResponse,
   type ViewerServerFrame,
@@ -94,6 +95,9 @@ const dom = {
   lightboxImg: el<HTMLImageElement>("lightbox-img"),
   lightboxName: el<HTMLSpanElement>("lightbox-name"),
   lightboxDownload: el<HTMLAnchorElement>("lightbox-download"),
+  replyBar: el<HTMLDivElement>("reply-bar"),
+  replyBarText: el<HTMLSpanElement>("reply-bar-text"),
+  replyCancel: el<HTMLButtonElement>("reply-cancel"),
 };
 
 // ---- State ----
@@ -114,6 +118,8 @@ const state = {
   readAt: {} as Record<string, number>,
   view: { kind: "conversation", id: ALL_CONVERSATION_ID } as View,
   staged: [] as File[],
+  /** Message the next send replies to (quotes), in the open conversation. */
+  replyTo: undefined as Message | undefined,
   sending: false,
   mention: { open: false, start: 0, items: [] as MentionCandidate[], index: 0 },
 };
@@ -481,6 +487,7 @@ function applyView(view: View): void {
   if (changed) {
     hideError();
     closeMention();
+    setReplyTo(undefined);
   }
   renderAll();
   if (changed) scrollToBottom();
@@ -926,8 +933,14 @@ function renderMessage(message: Message, continued: boolean): HTMLLIElement {
   time.dateTime = new Date(message.createdAt).toISOString();
   time.title = fullFormat.format(message.createdAt);
   head.append(time);
+  const replyBtn = h("button", "msg-reply-btn", "↩ Reply");
+  replyBtn.type = "button";
+  replyBtn.title = "Reply to this message (quotes it)";
+  replyBtn.addEventListener("click", () => setReplyTo(message));
+  head.append(replyBtn);
   li.append(head);
 
+  if (message.quote) li.append(renderQuote(message.quote));
   if (message.text) li.append(renderText(message.text));
   if (message.files.length > 0) {
     const files = h("ul", "msg-files");
@@ -990,6 +1003,36 @@ function applyReceipt(receipt: ReceiptFrame): void {
   const updated = renderReceipts(message);
   if (shown && updated) shown.replaceWith(updated);
 }
+
+/** Quote block of a reply; clicking jumps to the original when it is loaded. */
+function renderQuote(quote: Quote): HTMLButtonElement {
+  const el = h("button", "msg-quote");
+  el.type = "button";
+  el.title = `Reply to #${quote.seq} — click to show it`;
+  const files = quote.files > 0 ? ` · ${quote.files} file${quote.files === 1 ? "" : "s"}` : "";
+  el.append(h("span", "msg-quote-from", `@${quote.from}`), h("span", "msg-quote-text", `${quote.text || "(no text)"}${files}`));
+  el.addEventListener("click", () => {
+    const target = dom.messageList.querySelector<HTMLElement>(`[data-seq="${quote.seq}"]`);
+    if (!target) return;
+    target.scrollIntoView({ block: "center", behavior: "smooth" });
+    target.classList.remove("msg-flash");
+    void target.offsetWidth; // restart the animation
+    target.classList.add("msg-flash");
+  });
+  return el;
+}
+
+function setReplyTo(message: Message | undefined): void {
+  state.replyTo = message;
+  dom.replyBar.hidden = !message;
+  if (message) {
+    const text = message.text.replace(/\s+/g, " ").trim();
+    dom.replyBarText.textContent = `Replying to @${message.from}: ${text.length > 120 ? `${text.slice(0, 119)}…` : text || "(file)"}`;
+    dom.input.focus();
+  }
+}
+
+dom.replyCancel.addEventListener("click", () => setReplyTo(undefined));
 
 const MENTION_RE = /(^|[\s({,])(@(?:\{[^}\n]*\}|[a-z0-9][a-z0-9_-]*))/gi;
 
@@ -1158,7 +1201,9 @@ async function send(): Promise<void> {
     }
     const request: PostMessageRequest = { from: state.me, text };
     if (fileIds.length > 0) request.fileIds = fileIds;
-    if (view.kind === "draft") request.to = formatAddress(view.to);
+    if (state.replyTo && view.kind === "conversation" && state.replyTo.conversationId === view.id) {
+      request.replyToSeq = state.replyTo.seq;
+    } else if (view.kind === "draft") request.to = formatAddress(view.to);
     else if (view.id === ALL_CONVERSATION_ID) request.to = "@all";
     else request.conversationId = view.id;
 
@@ -1169,6 +1214,7 @@ async function send(): Promise<void> {
     });
     dom.input.value = "";
     state.staged = [];
+    setReplyTo(undefined);
     autosize();
     // Groups not loaded yet (e.g. a draft that just became a group) get their history fetched.
     if (!state.caches.has(res.conversation.id)) void loadMessages(res.conversation.id);
@@ -1191,6 +1237,11 @@ dom.composer.addEventListener("submit", (event) => {
 
 dom.input.addEventListener("keydown", (event) => {
   if (state.mention.open && handleMentionKey(event)) return;
+  if (event.key === "Escape" && state.replyTo) {
+    event.preventDefault();
+    setReplyTo(undefined);
+    return;
+  }
   if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
     event.preventDefault();
     void send();
