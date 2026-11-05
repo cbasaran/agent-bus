@@ -193,7 +193,7 @@ test("delivers like the composer: idle starts a turn, busy queues a follow-up, a
   await post({ from: "umit", to: "@alpha", text: "check the logs" });
   const busy = await alpha.injectedWith("check the logs");
   expect(busy.via).toBe("user");
-  expect(busy.deliverAs).toBe("followUp");
+  expect(busy.deliverAs).toBe("aside");
   expect(busy.content).toMatch(/message_id \d+ → @umit\.\)$/);
 
   alpha.idle = true;
@@ -290,7 +290,7 @@ test("a delivery is reported seen when its text reaches the model, not when it i
   alpha.idle = false;
   const { message } = await post({ from: "can", to: "@alpha", text: "queued while busy" });
   const queued = await alpha.injectedWith("queued while busy");
-  expect(queued.deliverAs).toBe("followUp");
+  expect(queued.deliverAs).toBe("aside");
 
   const receiptOf = async (waitMs: number) =>
     ((await (await fetch(`${bus.url}/api/messages/${message.seq}?waitMs=${waitMs}`)).json()) as {

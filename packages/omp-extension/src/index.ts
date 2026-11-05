@@ -1,7 +1,9 @@
 // omp extension: joins the message bus as the session's project folder and exposes the
 // `message-bus` tool (write / send / set). Messages for this agent arrive like composer input:
-// idle → a turn starts; busy → queued until the current turn ends; quiet (@all from other agents,
-// unless `set all wake`) → added to the conversation at the next turn without starting one.
+// idle → a turn starts; busy → `aside`: at the next step of the running turn, without cutting a tool
+// batch short, and ending a running `wait` (an agent waiting inside its turn for a bus reply would
+// otherwise never see it); quiet (@all from other agents, unless `set all wake`) → added to the
+// conversation at the next turn without starting one.
 // Only the main session joins; subagents share the folder but are not bus participants.
 import { realpathSync } from "node:fs";
 import * as os from "node:os";
@@ -73,7 +75,7 @@ export interface MessageBusApi {
       ctx: MessageBusContext
     ): Promise<ToolResult>;
   }): void;
-  sendUserMessage(content: string, options: { deliverAs?: "followUp"; attribution: "agent" }): void;
+  sendUserMessage(content: string, options: { deliverAs?: "aside"; attribution: "agent" }): void;
   sendMessage(
     message: { customType: string; content: string; display: boolean; attribution: "agent" },
     options: { deliverAs: "nextTurn" }
@@ -163,7 +165,7 @@ export default function messageBus(pi: MessageBusApi): void {
     } else if (sessionCtx?.isIdle() ?? true) {
       pi.sendUserMessage(text, { attribution: "agent" });
     } else {
-      pi.sendUserMessage(text, { deliverAs: "followUp", attribution: "agent" });
+      pi.sendUserMessage(text, { deliverAs: "aside", attribution: "agent" });
     }
   };
 
