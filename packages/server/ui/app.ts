@@ -15,6 +15,7 @@ import {
   type StateResponse,
   type ViewerServerFrame,
 } from "@agent-bus/protocol";
+import { renderMarkdown } from "./markdown";
 
 const PROFILE_KEY = "agent-bus.profile";
 /** Per-profile read markers: conversation id → createdAt of the newest message read; "*" = first visit. */
@@ -1036,22 +1037,29 @@ dom.replyCancel.addEventListener("click", () => setReplyTo(undefined));
 
 const MENTION_RE = /(^|[\s({,])(@(?:\{[^}\n]*\}|[a-z0-9][a-z0-9_-]*(?:@[a-z0-9][a-z0-9_-]*)?))/gi;
 
-/** Text with newlines preserved (CSS pre-wrap) and @mentions highlighted. */
-function renderText(text: string): HTMLDivElement {
-  const body = h("div", "msg-text");
+/** Plain text with @mentions highlighted. */
+function mentionNodes(text: string): Node[] {
+  const out: Node[] = [];
   let last = 0;
   for (const match of text.matchAll(MENTION_RE)) {
     const lead = match[1] ?? "";
     const mention = match[2] ?? "";
     const start = (match.index ?? 0) + lead.length;
-    if (start > last) body.append(text.slice(last, start));
+    if (start > last) out.push(document.createTextNode(text.slice(last, start)));
     const span = h("span", "mention", mention);
     const id = mention.slice(1).toLowerCase();
     if (id === state.me || id === "all") span.classList.add("mention-me");
-    body.append(span);
+    out.push(span);
     last = start + mention.length;
   }
-  if (last < text.length) body.append(text.slice(last));
+  if (last < text.length) out.push(document.createTextNode(text.slice(last)));
+  return out;
+}
+
+/** Message text as markdown (see markdown.ts), with @mentions highlighted outside code. */
+function renderText(text: string): HTMLDivElement {
+  const body = h("div", "msg-text");
+  body.append(...renderMarkdown(text, mentionNodes));
   return body;
 }
 
