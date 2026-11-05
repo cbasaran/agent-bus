@@ -43,7 +43,9 @@ function inline(text: string, plain: PlainRenderer): Node[] {
     if (start > last) out.push(...plain(text.slice(last, start)));
     last = start + m[0].length;
     if (m[2] !== undefined) {
-      out.push(el("code", "md-code", [document.createTextNode(m[2])]));
+      const code = el("code", "md-code", [document.createTextNode(m[2])]);
+      // Agents often wrap a bare URL in backticks; keep the code look but make it clickable.
+      out.push(/^https?:\/\/\S+$/.test(m[2].trim()) ? link(m[2].trim(), [code]) : code);
     } else if (m[4] !== undefined) {
       out.push(link(m[4], inline(m[3] ?? "", plain)));
     } else if (m[5] !== undefined) {
