@@ -132,6 +132,12 @@ CREATE TABLE IF NOT EXISTS conversation_members (
 CREATE INDEX IF NOT EXISTS conversation_members_participant
   ON conversation_members(participant_id);
 
+-- Ids of group conversations merged into another (old links keep working).
+CREATE TABLE IF NOT EXISTS conversation_aliases (
+  old_id TEXT PRIMARY KEY,
+  new_id TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS messages (
   seq INTEGER PRIMARY KEY AUTOINCREMENT,
   id TEXT NOT NULL UNIQUE,
@@ -239,9 +245,9 @@ function toMessage(row: MessageRow, receipts: Receipt[], quote: Quote | undefine
   };
 }
 
-/** `"g_" + sha256(sorted ids joined by ",").hex.slice(0, 12)` */
-export function groupConversationId(addressed: readonly string[]): string {
-  const hex = new Bun.CryptoHasher("sha256").update(addressed.join(",")).digest("hex");
+/** `"g_" + sha256(thread key ids joined by ",").hex.slice(0, 12)`, the id of a newly created group. */
+export function groupConversationId(keyIds: readonly string[]): string {
+  const hex = new Bun.CryptoHasher("sha256").update(keyIds.join(",")).digest("hex");
   return `g_${hex.slice(0, 12)}`;
 }
 
@@ -265,7 +271,86 @@ export class BusDatabase {
     if (!messageColumns.some((c) => c.name === "reply_to_seq")) {
       this.db.exec("ALTER TABLE messages ADD COLUMN reply_to_seq INTEGER");
     }
+    // Databases created before one-thread-per-agent-set lack the column (filled in by mergeThreads).
+    const conversationColumns = this.db.query<{ name: string }, []>("PRAGMA table_info(conversations)").all();
+    if (!conversationColumns.some((c) => c.name === "thread_key")) {
+      this.db.exec("ALTER TABLE conversations ADD COLUMN thread_key TEXT");
+    }
     this.seed(humans, now);
+    this.mergeThreads();
+  }
+
+  /**
+   * Thread key of an address set (writer included): its agent ids, sorted; the human ids when it has no agent.
+   * Humans join and leave the picture by writing, so they never decide which thread a message lands in.
+   */
+  threadKey(ids: readonly string[]): string {
+    const sorted = Array.from(new Set(ids)).sort();
+    const agents = this.db
+      .query<{ id: string }, [string]>(
+        "SELECT id FROM participants WHERE kind = 'agent' AND id IN (SELECT value FROM json_each(?1)) ORDER BY id"
+      )
+      .all(JSON.stringify(sorted))
+      .map((r) => r.id);
+    return (agents.length > 0 ? agents : sorted).join(",");
+  }
+
+  /**
+   * Gives every group its thread key and merges groups that share one into the one with the most messages:
+   * messages move, members are united, and the merged ids become aliases. Idempotent; runs at startup.
+   */
+  private mergeThreads(): void {
+    this.db.transaction(() => {
+      const groups = this.db
+        .query<{ id: string; n: number; last: number }, []>(
+          `SELECT c.id, (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) AS n, c.last_message_at AS last
+           FROM conversations c WHERE c.kind = 'group' ORDER BY n DESC, last DESC, c.id`
+        )
+        .all();
+      const survivors = new Map<string, string>();
+      for (const group of groups) {
+        const key = this.threadKey(this.membersOf(group.id));
+        const survivor = survivors.get(key);
+        if (survivor === undefined) {
+          survivors.set(key, group.id);
+          this.db.query("UPDATE conversations SET thread_key = ?2 WHERE id = ?1").run(group.id, key);
+          continue;
+        }
+        this.mergeConversation(group.id, survivor);
+      }
+      this.db.exec(
+        "CREATE UNIQUE INDEX IF NOT EXISTS conversations_thread_key ON conversations(thread_key) WHERE kind = 'group'"
+      );
+    })();
+  }
+
+  private mergeConversation(from: string, into: string): void {
+    const rows = this.db
+      .query<ConversationRow, [string, string]>("SELECT * FROM conversations WHERE id IN (?1, ?2)")
+      .all(from, into);
+    const source = rows.find((r) => r.id === from);
+    const target = rows.find((r) => r.id === into);
+    if (!source || !target) return;
+    const addressed = Array.from(
+      new Set([...parseStringArray(target.addressed_json), ...parseStringArray(source.addressed_json)])
+    ).sort();
+    this.db.query("UPDATE messages SET conversation_id = ?2 WHERE conversation_id = ?1").run(from, into);
+    this.db
+      .query(
+        `INSERT OR IGNORE INTO conversation_members (conversation_id, participant_id)
+         SELECT ?2, participant_id FROM conversation_members WHERE conversation_id = ?1`
+      )
+      .run(from, into);
+    this.db.query("DELETE FROM conversation_members WHERE conversation_id = ?1").run(from);
+    this.db
+      .query(
+        `UPDATE conversations SET addressed_json = ?2, created_at = MIN(created_at, ?3),
+           last_message_at = MAX(last_message_at, ?4) WHERE id = ?1`
+      )
+      .run(into, JSON.stringify(addressed), source.created_at, source.last_message_at);
+    this.db.query("DELETE FROM conversations WHERE id = ?1").run(from);
+    this.db.query("UPDATE conversation_aliases SET new_id = ?2 WHERE new_id = ?1").run(from, into);
+    this.db.query("INSERT OR REPLACE INTO conversation_aliases (old_id, new_id) VALUES (?1, ?2)").run(from, into);
   }
 
   close(): void {
@@ -459,10 +544,14 @@ export class BusDatabase {
     };
   }
 
+  /** The conversation `id`, or the one it was merged into. */
   getConversation(id: string): Conversation | null {
+    const alias = this.db
+      .query<{ new_id: string }, [string]>("SELECT new_id FROM conversation_aliases WHERE old_id = ?1")
+      .get(id);
     const row = this.db
       .query<ConversationRow, [string]>("SELECT * FROM conversations WHERE id = ?1")
-      .get(id);
+      .get(alias?.new_id ?? id);
     return row ? this.toConversation(row, this.membersOf(row.id)) : null;
   }
 
@@ -488,42 +577,34 @@ export class BusDatabase {
   }
 
   /**
-   * The group for an address set (`ids` sorted, unique, writer included): the conversation whose members are
-   * exactly `ids` (so writing back to everyone in a conversation a human joined lands in it), else the one
-   * addressed to `ids`, created if needed. When several conversations have exactly these members, the most
-   * recently active wins.
+   * The group for an address set (`ids` sorted, unique, writer included): one thread per thread key (its agents,
+   * see `threadKey`), created if needed. Humans in `ids` become members, so a human an agent writes to is in it.
    */
   getOrCreateGroup(ids: readonly string[], now = Date.now()): Conversation {
-    const byMembers = this.db
-      .query<{ id: string }, [string, number]>(
-        `SELECT c.id FROM conversations c
-         WHERE c.kind = 'group'
-           AND (SELECT COUNT(*) FROM conversation_members m WHERE m.conversation_id = c.id) = ?2
-           AND NOT EXISTS (
-             SELECT 1 FROM conversation_members m WHERE m.conversation_id = c.id
-               AND m.participant_id NOT IN (SELECT value FROM json_each(?1)))
-         ORDER BY c.last_message_at DESC LIMIT 1`
-      )
-      .get(JSON.stringify(ids), ids.length);
-    if (byMembers) {
-      const existing = this.getConversation(byMembers.id);
-      if (existing) return existing;
-    }
-    const addressed = ids;
-    const id = groupConversationId(addressed);
+    const key = this.threadKey(ids);
     return this.db.transaction((): Conversation => {
-      const inserted = this.db
-        .query(
-          `INSERT OR IGNORE INTO conversations (id, kind, addressed_json, created_at, last_message_at)
-           VALUES (?1, 'group', ?2, ?3, ?3)`
-        )
-        .run(id, JSON.stringify(addressed), now);
-      if (inserted.changes > 0) {
-        const addMember = this.db.query(
-          "INSERT OR IGNORE INTO conversation_members (conversation_id, participant_id) VALUES (?1, ?2)"
+      const addMember = this.db.query(
+        "INSERT OR IGNORE INTO conversation_members (conversation_id, participant_id) VALUES (?1, ?2)"
+      );
+      const existing = this.db
+        .query<{ id: string }, [string]>("SELECT id FROM conversations WHERE kind = 'group' AND thread_key = ?1")
+        .get(key);
+      let id = existing?.id;
+      if (id === undefined) {
+        const base = groupConversationId(key.split(","));
+        id = base;
+        const taken = this.db.query<{ id: string }, [string]>(
+          "SELECT id FROM conversations WHERE id = ?1 UNION SELECT old_id FROM conversation_aliases WHERE old_id = ?1"
         );
-        for (const member of addressed) addMember.run(id, member);
+        for (let n = 2; taken.get(id); n++) id = `${base}-${n}`;
+        this.db
+          .query(
+            `INSERT INTO conversations (id, kind, addressed_json, created_at, last_message_at, thread_key)
+             VALUES (?1, 'group', ?2, ?3, ?3, ?4)`
+          )
+          .run(id, JSON.stringify(ids), now, key);
       }
+      for (const member of ids) addMember.run(id, member);
       const conversation = this.getConversation(id);
       if (!conversation) throw new Error(`Failed to create conversation ${id}`);
       return conversation;

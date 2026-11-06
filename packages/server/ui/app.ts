@@ -161,13 +161,19 @@ function agents(): Participant[] {
     .sort((a, b) => Number(b.online) - Number(a.online) || a.id.localeCompare(b.id));
 }
 
-/** Existing group addressed exactly to `ids`. */
+/** Thread key of a set of ids, as the server computes it: its agents, else (no agent) its humans. */
+function threadKey(ids: readonly string[]): string {
+  const agentIds = new Set(agents().map((a) => a.id));
+  const sorted = sortedUnique(ids);
+  const agentsOnly = sorted.filter((id) => agentIds.has(id));
+  return (agentsOnly.length > 0 ? agentsOnly : sorted).join(",");
+}
+
+/** Existing thread for `ids` (one per set of agents; humans never split a thread). */
 function findGroup(ids: readonly string[]): Conversation | undefined {
-  const wanted = sortedUnique(ids);
+  const wanted = threadKey(ids);
   for (const conv of state.conversations.values()) {
-    if (conv.kind !== "group") continue;
-    const addressed = sortedUnique(conv.addressed);
-    if (addressed.length === wanted.length && addressed.every((id, i) => id === wanted[i])) return conv;
+    if (conv.kind === "group" && threadKey(conv.members) === wanted) return conv;
   }
   return undefined;
 }
@@ -786,8 +792,10 @@ function renderFilterNote(hidden: Conversation[]): void {
 function currentDirectAgent(): string | undefined {
   if (state.view.kind === "draft") return state.view.to.length === 1 ? state.view.to[0] : undefined;
   const conv = state.conversations.get(state.view.id);
-  if (!conv || conv.kind !== "group" || conv.addressed.length !== 2 || !conv.addressed.includes(state.me)) return undefined;
-  return conv.addressed.find((id) => id !== state.me);
+  if (!conv || conv.kind !== "group") return undefined;
+  const agentIds = new Set(agents().map((a) => a.id));
+  const convAgents = conv.members.filter((id) => agentIds.has(id));
+  return convAgents.length === 1 ? convAgents[0] : undefined;
 }
 
 function renderAgentList(): void {

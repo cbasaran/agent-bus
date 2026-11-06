@@ -353,7 +353,8 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
   });
 
   const getMessages = (conversationId: string, url: URL): MessagesResponse => {
-    if (!db.getConversation(conversationId)) {
+    const conversation = db.getConversation(conversationId);
+    if (!conversation) {
       throw new HttpError(404, `Unknown conversation "${conversationId}"`);
     }
     const parseIntParam = (key: string): number | null => {
@@ -367,7 +368,7 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
     };
     const beforeSeq = parseIntParam("beforeSeq");
     const limit = Math.min(parseIntParam("limit") ?? DEFAULT_PAGE, MAX_PAGE);
-    return { messages: db.listMessages(conversationId, beforeSeq, limit) };
+    return { messages: db.listMessages(conversation.id, beforeSeq, limit) };
   };
 
   /**

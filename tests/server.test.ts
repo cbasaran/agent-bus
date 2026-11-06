@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -261,7 +262,7 @@ describe("delivery", () => {
     expect(first.conversation.id).toBe(second.conversation.id);
     expect(first.conversation.kind).toBe("group");
     expect(first.conversation.addressed).toEqual(["alpha", "beta", "can"]);
-    expect(first.conversation.id).toBe(groupConversationId(["alpha", "beta", "can"]));
+    expect(first.conversation.id).toBe(groupConversationId(["alpha", "beta"]));
 
     const toAlpha = await alpha.client.take("deliver");
     expect(toAlpha.replyTo).toBe("@{beta,can}");
@@ -269,13 +270,52 @@ describe("delivery", () => {
     const toBeta = await beta.client.take("deliver");
     expect(toBeta.replyTo).toBe("@{alpha,can}");
 
+    // The same agents without the human: still that thread.
     const direct = await send({ from: alpha.id, to: "@beta", text: "direct" });
-    expect(direct.conversation.addressed).toEqual(["alpha", "beta"]);
-    const toBetaDirect = await beta.client.take("deliver");
-    // second group message from can arrives first
-    expect(toBetaDirect.message.id).toBe(second.message.id);
-    const directFrame = await beta.client.take("deliver");
-    expect(directFrame.replyTo).toBe("@alpha");
+    expect(direct.conversation.id).toBe(first.conversation.id);
+    expect((await beta.client.take("deliver")).message.id).toBe(second.message.id);
+    expect((await beta.client.take("deliver")).replyTo).toBe("@{alpha,can}");
+  });
+
+  test("one thread per set of agents: humans never split it, and a human an agent writes to joins it", async () => {
+    const alpha = await joinPath("/tmp/x/alpha");
+    const beta = await joinPath("/tmp/x/beta");
+    const fromCan = await send({ from: "can", to: "@alpha", text: "can here" });
+    const fromUmit = await send({ from: "umit", to: "@alpha", text: "umit here" });
+    const fromAlpha = await send({ from: alpha.id, to: "@{can,umit}", text: "to both" });
+    expect(fromUmit.conversation.id).toBe(fromCan.conversation.id);
+    expect(fromAlpha.conversation.id).toBe(fromCan.conversation.id);
+    expect(fromAlpha.conversation.members).toEqual(["alpha", "can", "umit"]);
+
+    // A different set of agents is a different thread; so is a humans-only one.
+    expect((await send({ from: "can", to: "@{alpha,beta}", text: "x" })).conversation.id).not.toBe(fromCan.conversation.id);
+    expect((await send({ from: beta.id, to: "@can", text: "x" })).conversation.id).not.toBe(fromCan.conversation.id);
+    const humans = await send({ from: "can", to: "@umit", text: "just us" });
+    expect(humans.conversation.members).toEqual(["can", "umit"]);
+    expect((await send({ from: "umit", to: "@can", text: "yes" })).conversation.id).toBe(humans.conversation.id);
+  });
+
+  test("threads that share their agents are merged at startup; the merged id stays a working alias", async () => {
+    const alpha = await joinPath("/tmp/x/alpha");
+    const kept = await send({ from: "can", to: "@alpha", text: "kept thread" });
+    await leave(alpha.client);
+    await bus.stop();
+    // A thread from before the rule: same agent (alpha), other human, older and smaller.
+    const raw = new Database(path.join(dataDir, "message-bus.sqlite"));
+    raw.exec("DROP INDEX conversations_thread_key");
+    raw.query("INSERT INTO conversations (id, kind, addressed_json, created_at, last_message_at) VALUES ('g_old', 'group', '[\"alpha\",\"umit\"]', 1, 1)").run();
+    raw.query("INSERT INTO conversation_members VALUES ('g_old', 'alpha'), ('g_old', 'umit')").run();
+    raw.query("INSERT INTO messages (id, conversation_id, from_id, from_kind, text, files_json, created_at) VALUES ('m_old', 'g_old', 'umit', 'human', 'old thread', '[]', 1)").run();
+    raw.close();
+
+    bus = createBusServer({ host: "127.0.0.1", port: 0, dataDir, humans: ["can", "umit"] });
+    const groups = (await state()).conversations.filter((c) => c.kind === "group");
+    expect(groups.map((c) => c.id)).toEqual([kept.conversation.id]);
+    expect(groups[0]?.members).toEqual(["alpha", "can", "umit"]);
+    const page = (await (await fetch(`${bus.url}/api/conversations/g_old/messages`)).json()) as MessagesResponse;
+    expect(page.messages.map((m) => m.text)).toEqual(["kept thread", "old thread"]);
+    const byOldId = await send({ from: "umit", conversationId: "g_old", text: "still works" });
+    expect(byOldId.conversation.id).toBe(kept.conversation.id);
   });
 
   test("a human who joins an agents' group by writing is in every reply address, and replies stay in that group", async () => {
