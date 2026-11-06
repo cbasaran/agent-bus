@@ -188,6 +188,38 @@ button:disabled {
   font-weight: 500;
 }
 
+.side-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: 8px;
+  white-space: nowrap;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.unread-toggle {
+  padding: 1px 8px;
+  border: 1px solid var(--sidebar-active);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--sidebar-muted);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.unread-toggle:hover {
+  background: var(--sidebar-hover);
+  color: var(--sidebar-text);
+}
+
+.unread-toggle.on {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
 .side-list {
   list-style: none;
   margin: 0;

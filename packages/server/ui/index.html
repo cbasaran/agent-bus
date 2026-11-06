@@ -34,7 +34,10 @@
       <section class="side-section">
         <div class="side-heading">
           <span>Conversations</span>
-          <button id="new-group-btn" type="button" class="link-btn" title="Start a group with several participants">+ New group</button>
+          <span class="side-heading-actions">
+            <button id="unread-btn" type="button" class="unread-toggle" aria-pressed="false" title="Show only conversations with unread messages">Unread</button>
+            <button id="new-group-btn" type="button" class="link-btn" title="Start a group with several participants">+ Group</button>
+          </span>
         </div>
         <div id="conv-filter" class="conv-filter" hidden></div>
         <ul id="conversation-list" class="side-list"></ul>

@@ -20,6 +20,7 @@ import { renderMarkdown } from "./markdown";
 const PROFILE_KEY = "agent-bus.profile";
 /** Per-profile read markers: conversation id → createdAt of the newest message read; "*" = first visit. */
 const READ_KEY_PREFIX = "agent-bus.read.";
+const UNREAD_ONLY_KEY = "agent-bus.unreadOnly";
 const PAGE_SIZE = 100;
 const MAX_MENTIONS = 8;
 const RECONNECT_MIN_MS = 1000;
@@ -63,6 +64,7 @@ const dom = {
   linkStatus: el<HTMLSpanElement>("link-status"),
   profileSelect: el<HTMLSelectElement>("profile-select"),
   newGroupBtn: el<HTMLButtonElement>("new-group-btn"),
+  unreadBtn: el<HTMLButtonElement>("unread-btn"),
   conversationList: el<HTMLUListElement>("conversation-list"),
   agentList: el<HTMLUListElement>("agent-list"),
   agentCount: el<HTMLSpanElement>("agent-count"),
@@ -116,6 +118,8 @@ const state = {
   attention: new Map<string, number>(),
   /** Agents whose conversations the sidebar is limited to (all of them must be members). */
   filter: new Set<string>(),
+  /** Show only conversations with unread messages (the open one stays). Remembered in this browser. */
+  unreadOnly: localStorage.getItem(UNREAD_ONLY_KEY) === "1",
   readAt: {} as Record<string, number>,
   view: { kind: "conversation", id: ALL_CONVERSATION_ID } as View,
   staged: [] as File[],
@@ -186,11 +190,26 @@ function sortedConversations(): Conversation[] {
   return all ? [all, ...groups] : groups;
 }
 
-/** `@all` always passes; a group passes when every filtered agent is a member. */
+/** Agent filter: `@all` always passes, a group when every filtered agent is a member. Unread filter: unread or open. */
 function passesFilter(conv: Conversation): boolean {
+  if (state.unreadOnly && (state.unread.get(conv.id) ?? 0) === 0 && !isCurrent(conv.id)) return false;
   if (conv.kind === "all" || state.filter.size === 0) return true;
   return [...state.filter].every((id) => conv.members.includes(id));
 }
+
+function renderUnreadToggle(): void {
+  dom.unreadBtn.classList.toggle("on", state.unreadOnly);
+  dom.unreadBtn.setAttribute("aria-pressed", String(state.unreadOnly));
+  dom.unreadBtn.title = state.unreadOnly
+    ? "Showing only conversations with unread messages — click to show all"
+    : "Show only conversations with unread messages";
+}
+
+dom.unreadBtn.addEventListener("click", () => {
+  state.unreadOnly = !state.unreadOnly;
+  localStorage.setItem(UNREAD_ONLY_KEY, state.unreadOnly ? "1" : "0");
+  renderSidebar();
+});
 
 function toggleFilter(agentId: string): void {
   if (!state.filter.delete(agentId)) state.filter.add(agentId);
@@ -708,6 +727,7 @@ function renderAll(): void {
 }
 
 function renderSidebar(): void {
+  renderUnreadToggle();
   renderConversationList();
   renderAgentList();
   renderNotifyButton();
@@ -759,7 +779,9 @@ function renderConversationList(): void {
     li.append(button);
     items.splice(1, 0, li);
   }
-  if (state.filter.size > 0 && shown.every((c) => c.kind === "all")) {
+  if (state.unreadOnly && shown.every((c) => isCurrent(c.id))) {
+    items.push(h("li", "side-empty", "No unread conversations."));
+  } else if (!state.unreadOnly && state.filter.size > 0 && shown.every((c) => c.kind === "all")) {
     items.push(h("li", "side-empty", `No conversations with ${mentionList([...state.filter])} yet.`));
   }
   dom.conversationList.replaceChildren(...items);
