@@ -8,7 +8,7 @@
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
-  <div class="app">
+  <div id="app" class="app">
     <header class="topbar">
       <div class="brand">
         <span class="brand-mark">⇄</span>
@@ -75,6 +75,15 @@
       </form>
       <div id="drop-overlay" class="drop-overlay" hidden>Drop files to attach</div>
     </main>
+
+    <aside id="doc-panel" class="doc-panel" hidden>
+      <div class="doc-head">
+        <span id="doc-title" class="doc-title"></span>
+        <a id="doc-download" class="link-btn doc-download" title="Download the file">Download</a>
+        <button id="doc-close" type="button" class="icon-btn doc-close" title="Close (Esc)">✕</button>
+      </div>
+      <div id="doc-body" class="doc-body msg-text"></div>
+    </aside>
   </div>
 
   <dialog id="lightbox" class="lightbox">

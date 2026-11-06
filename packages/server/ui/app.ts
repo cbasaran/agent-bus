@@ -98,6 +98,12 @@ const dom = {
   lightboxImg: el<HTMLImageElement>("lightbox-img"),
   lightboxName: el<HTMLSpanElement>("lightbox-name"),
   lightboxDownload: el<HTMLAnchorElement>("lightbox-download"),
+  app: el<HTMLDivElement>("app"),
+  docPanel: el<HTMLElement>("doc-panel"),
+  docTitle: el<HTMLSpanElement>("doc-title"),
+  docDownload: el<HTMLAnchorElement>("doc-download"),
+  docClose: el<HTMLButtonElement>("doc-close"),
+  docBody: el<HTMLDivElement>("doc-body"),
   replyBar: el<HTMLDivElement>("reply-bar"),
   replyBarText: el<HTMLSpanElement>("reply-bar-text"),
   replyCancel: el<HTMLButtonElement>("reply-cancel"),
@@ -1133,7 +1139,17 @@ function renderFile(file: FileRef): HTMLLIElement {
   link.href = url;
   link.download = file.name;
   link.title = `${file.mimeType}\nsha256 ${file.sha256}`;
-  link.append(h("span", "file-icon", "⬇"), h("span", "file-name", file.name));
+  if (isMarkdownFile(file)) {
+    link.title = `Open ${file.name} on the right (Ctrl/⌘+click downloads)\nsha256 ${file.sha256}`;
+    link.append(h("span", "file-icon", "📄"), h("span", "file-name", file.name));
+    link.addEventListener("click", (event) => {
+      if (event.ctrlKey || event.metaKey || event.shiftKey || event.button !== 0) return;
+      event.preventDefault();
+      void openDoc(file, url);
+    });
+  } else {
+    link.append(h("span", "file-icon", "⬇"), h("span", "file-name", file.name));
+  }
   row.append(link, h("span", "file-size", formatBytes(file.size)));
   if (file.mimeType.startsWith("image/")) {
     li.classList.add("msg-image");
@@ -1161,6 +1177,56 @@ function renderFile(file: FileRef): HTMLLIElement {
   li.append(row);
   return li;
 }
+
+function isMarkdownFile(file: FileRef): boolean {
+  return file.mimeType === "text/markdown" || /\.(md|markdown)$/i.test(file.name);
+}
+
+/** Larger documents are offered as a download only. */
+const MAX_DOC_BYTES = 2 * 1024 * 1024;
+let docRequest = 0;
+
+/** Shows a markdown attachment rendered in the panel right of the conversation. */
+async function openDoc(file: FileRef, url: string): Promise<void> {
+  const request = ++docRequest;
+  dom.docTitle.textContent = `${file.name} · ${formatBytes(file.size)}`;
+  dom.docTitle.title = file.name;
+  dom.docDownload.href = url;
+  dom.docDownload.download = file.name;
+  dom.docPanel.hidden = false;
+  dom.app.classList.add("with-doc");
+  if (file.size > MAX_DOC_BYTES) {
+    dom.docBody.replaceChildren(h("p", "doc-note", `Too large to show here (${formatBytes(file.size)}); use Download.`));
+    return;
+  }
+  dom.docBody.replaceChildren(h("p", "doc-note", "Loading…"));
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const text = await res.text();
+    if (request !== docRequest) return;
+    dom.docBody.replaceChildren(...renderMarkdown(text, mentionNodes));
+    dom.docBody.scrollTop = 0;
+  } catch (error) {
+    if (request !== docRequest) return;
+    dom.docBody.replaceChildren(h("p", "doc-note", `Could not load ${file.name}: ${(error as Error).message}`));
+  }
+}
+
+function closeDoc(): void {
+  docRequest++;
+  dom.docPanel.hidden = true;
+  dom.app.classList.remove("with-doc");
+  dom.docBody.replaceChildren();
+}
+
+dom.docClose.addEventListener("click", closeDoc);
+// Esc closes the document unless something else (mention menu, reply bar, a dialog) used it first.
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape" || event.defaultPrevented || dom.docPanel.hidden) return;
+  if (document.querySelector("dialog[open]")) return;
+  closeDoc();
+});
 
 function openLightbox(file: FileRef, url: string): void {
   dom.lightboxImg.src = url;

@@ -78,6 +78,59 @@ button:disabled {
     "side main";
 }
 
+.app.with-doc {
+  grid-template-columns: 280px minmax(0, 1fr) minmax(360px, 42%);
+  grid-template-areas:
+    "top top top"
+    "side main doc";
+}
+
+.doc-panel {
+  grid-area: doc;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-left: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.doc-panel[hidden] {
+  display: none;
+}
+
+.doc-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.doc-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 650;
+}
+
+.doc-download {
+  font-size: 13px;
+}
+
+.doc-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 20px 32px;
+  white-space: normal;
+}
+
+.doc-note {
+  color: var(--muted);
+}
+
 .topbar {
   grid-area: top;
   display: flex;
@@ -1217,14 +1270,36 @@ ul.md-list ul.md-list { list-style: circle; }
   }
 }
 
+@media (max-width: 1100px) {
+  /* Too narrow for three columns: the document covers the conversation instead. */
+  .app.with-doc {
+    grid-template-columns: 220px minmax(0, 1fr);
+    grid-template-areas:
+      "top top"
+      "side doc";
+  }
+
+  .app.with-doc .main {
+    display: none;
+  }
+}
+
 @media (max-width: 640px) {
-  .app {
+  .app,
+  .app.with-doc {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto auto minmax(0, 1fr);
     grid-template-areas:
       "top"
       "side"
       "main";
+  }
+
+  .app.with-doc {
+    grid-template-areas:
+      "top"
+      "side"
+      "doc";
   }
 
   .sidebar {

@@ -65,7 +65,7 @@ Profile picker (`@can` / `@umit`, remembered in the browser). Left, top: agents 
 
 Message text renders as markdown (`ui/markdown.ts`, no dependency): fenced code, headings, lists (nested by indent), blockquotes, GFM tables (with column alignment), rules, paragraphs with line breaks kept, and inline code, bold, italic, strikethrough, links and bare URLs (`http(s)`/`mailto` only, opening in a new tab). It builds DOM nodes directly, never `innerHTML`, so HTML in a message shows as text. `@mentions` are highlighted outside code. Agents receive the raw text.
 
-Attachments show as name + size download links. Images (`image/*` the browser can display) also show an inline preview (at most 320×240); clicking it opens the image fitted to the window in a viewer with a download link; a click or Esc closes it. Formats the browser cannot render (e.g. HEIC) stay plain download links.
+Attachments show as name + size download links. Images (`image/*` the browser can display) also show an inline preview (at most 320×240); clicking it opens the image fitted to the window in a viewer with a download link; a click or Esc closes it. Formats the browser cannot render (e.g. HEIC) stay plain download links. Markdown files (`text/markdown`, `.md`, `.markdown`) open rendered in a panel right of the conversation (same renderer as messages; up to 2 MB, larger ones are download-only), with Download and ✕ (or Esc); Ctrl/⌘+click still downloads. Below 1100 px window width the panel takes the conversation's place until closed.
 
 Replies: hovering a message shows `↩ Reply`; it puts `Replying to @x: …` above the composer (✕ or Esc cancels) and the next send goes as `replyToSeq`, quoting that message. Replies show their quote above the text.
 
