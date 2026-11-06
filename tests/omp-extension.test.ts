@@ -19,19 +19,15 @@ class FakeOmp {
   idle = true;
   readonly injected: Injected[] = [];
   private waiters: Array<{ until: () => boolean; resolve: () => void }> = [];
-  private sessionStart?: (event: unknown, ctx: MessageBusContext) => void;
-  private sessionShutdown?: () => void;
-  private contextHook?: (event: { messages: unknown[] }) => void;
+  private handlers = new Map<string, (event: never, ctx: MessageBusContext) => void>();
   tool?: Parameters<MessageBusApi["registerTool"]>[0];
 
   constructor(readonly cwd: string, readonly kind: "main" | "sub" = "main") {
     const chain = { optional: () => chain, describe: () => chain };
     const api: MessageBusApi = {
       zod: { object: () => chain, string: () => chain, number: () => chain, enum: () => chain, array: () => chain },
-      on: ((event: string, handler: never) => {
-        if (event === "session_start") this.sessionStart = handler;
-        else if (event === "context") this.contextHook = handler;
-        else this.sessionShutdown = handler;
+      on: ((event: string, handler: (event: never, ctx: MessageBusContext) => void) => {
+        this.handlers.set(event, handler);
       }) as MessageBusApi["on"],
       registerTool: (definition) => {
         this.tool = definition;
@@ -46,12 +42,17 @@ class FakeOmp {
     return { cwd: this.cwd, agent: { kind: this.kind }, isIdle: () => this.idle };
   }
 
+  /** Fires omp event `name` at the extension, as omp would. */
+  emit(name: string, event: unknown = {}): void {
+    this.handlers.get(name)?.(event as never, this.ctx);
+  }
+
   start(): void {
-    this.sessionStart?.({}, this.ctx);
+    this.emit("session_start");
   }
 
   shutdown(): void {
-    this.sessionShutdown?.();
+    this.emit("session_shutdown");
   }
 
   run(params: MessageBusToolParams) {
@@ -60,7 +61,7 @@ class FakeOmp {
 
   /** Simulates a model request whose context holds `contents` (as omp user/custom messages). */
   modelRequest(contents: string[]): void {
-    this.contextHook?.({ messages: contents.map((content) => ({ role: "user", content: [{ type: "text", text: content }] })) });
+    this.emit("context", { messages: contents.map((content) => ({ role: "user", content: [{ type: "text", text: content }] })) });
   }
 
   private record(entry: Injected): void {
@@ -349,4 +350,36 @@ test("reply answers a message by its number, into that message's conversation", 
   await expect(alpha.run({ op: "reply", message_id: private_.seq, message: "x" })).rejects.toThrow(/not in conversation/);
   await expect(alpha.run({ op: "reply", message_id: 999_999, message: "x" })).rejects.toThrow(/Unknown message #999999/);
   await expect(alpha.run({ op: "reply", message_id: message.seq })).rejects.toThrow(/reply needs/);
+});
+
+test("the agent reports its status to the bus without a model turn: busy with its tool and intent, waiting messages, then idle", async () => {
+  const alpha = await startSession("alpha");
+  const alphaIs = (pred: (p: Participant) => boolean) =>
+    participantsWhere((ps) => ps.some((p) => p.id === "alpha" && pred(p)));
+  const current = () => participants.find((p) => p.id === "alpha");
+  await alphaIs((p) => p.status?.state === "idle");
+
+  alpha.idle = false;
+  alpha.emit("agent_start");
+  alpha.emit("tool_execution_start", { toolCallId: "t1", toolName: "bash", intent: "Running the release export" });
+  await alphaIs((p) => p.status?.tool === "bash");
+  expect(current()?.status).toMatchObject({ state: "busy", tool: "bash", activity: "Running the release export" });
+
+  // A message for the busy agent counts as waiting until its model sees it.
+  await post({ from: "can", to: "@alpha", text: "status check" });
+  const queued = await alpha.injectedWith("status check");
+  await alphaIs((p) => p.waiting === 1);
+  alpha.modelRequest([queued.content]);
+  await alphaIs((p) => p.waiting === 0);
+
+  // A turn that continues stays busy; the end of the run is idle, without tool or intent.
+  alpha.emit("tool_execution_end", { toolCallId: "t1" });
+  alpha.emit("agent_end", { willContinue: true });
+  await alphaIs((p) => p.status?.state === "busy" && p.status.tool === undefined);
+  alpha.emit("agent_end", {});
+  await alphaIs((p) => p.status?.state === "idle");
+  expect(current()?.status?.activity).toBeUndefined();
+
+  // Status never reaches the model: the only injection is the bus message.
+  expect(alpha.injected.map((i) => i.content.includes("status check"))).toEqual([true]);
 });

@@ -4,6 +4,7 @@
 import * as path from "node:path";
 import type {
   AgentClientFrame,
+  AgentStatus,
   AgentServerFrame,
   FileRef,
   Message,
@@ -105,6 +106,7 @@ export class BusConnection {
         this.participants = frame.participants;
         this.reconnectDelay = RECONNECT_MIN_MS;
         for (const seq of this.unsentSeen) this.markSeen(seq);
+        if (this.status) this.sendFrame({ type: "status", status: this.status });
         this.options.onJoined?.(frame.id);
         return;
       case "participants":
@@ -142,6 +144,18 @@ export class BusConnection {
     } else {
       this.unsentSeen.add(seq);
     }
+  }
+
+  private status: AgentStatus | undefined;
+
+  /** Reports what this agent is doing (resent after every join). Never reaches a model. */
+  reportStatus(status: AgentStatus): void {
+    this.status = status;
+    this.sendFrame({ type: "status", status });
+  }
+
+  private sendFrame(frame: AgentClientFrame): void {
+    if (this.socket?.readyState === WebSocket.OPEN && this.id !== undefined) this.socket.send(JSON.stringify(frame));
   }
 
   private requireId(): string {

@@ -33,6 +33,22 @@ export interface Participant {
   connections: number;
   lastSeenAt: number;
   settings: AgentSettings;
+  /** Agents: what the harness reports about itself, while connected (omp only today). */
+  status?: AgentStatus;
+  /** Agents: messages delivered to its session but not yet seen by its model. */
+  waiting?: number;
+}
+
+/** An agent's own report of what it is doing; sent by the harness, never costs a model turn. */
+export interface AgentStatus {
+  state: "idle" | "busy";
+  /** When it entered `state`. */
+  since: number;
+  /** Tool running right now (the oldest when several run), and since when. */
+  tool?: string;
+  toolSince?: number;
+  /** The agent's one-line intent for its latest tool call (omp shows it as "⎋ …"). */
+  activity?: string;
 }
 
 export interface Conversation {
@@ -120,8 +136,11 @@ export type AgentServerFrame =
   | ReceiptFrame
   | { type: "error"; error: string };
 
-/** `ack`: the harness accepted delivery `seq` into the session. `seen`: it was handed to the model. */
-export type AgentClientFrame = { type: "ack"; seq: number } | { type: "seen"; seq: number };
+/** `ack`: the harness accepted delivery `seq` into the session. `seen`: it was handed to the model. `status`: what the agent is doing. */
+export type AgentClientFrame =
+  | { type: "ack"; seq: number }
+  | { type: "seen"; seq: number }
+  | { type: "status"; status: AgentStatus };
 
 // ---- Website: WS /ws/viewer ----
 

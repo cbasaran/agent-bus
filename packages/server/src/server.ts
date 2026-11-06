@@ -14,6 +14,7 @@ import {
   type AgentServerFrame,
   type Conversation,
   type AgentSettings,
+  type AgentStatus,
   type FileRef,
   type HealthResponse,
   type Message,
@@ -80,6 +81,10 @@ type SocketData =
       harness: string | null;
       /** Assigned on open; "" until joined. */
       id: string;
+      /** Latest status this connection reported, when, and when its first report arrived. */
+      status?: AgentStatus;
+      statusAt?: number;
+      reportingSince?: number;
     }
   | { kind: "viewer" };
 
@@ -112,6 +117,18 @@ function resolveHumans(option: string[] | undefined): string[] {
 function nonEmptyParam(url: URL, key: string): string | null {
   const value = url.searchParams.get(key)?.trim();
   return value ? value : null;
+}
+
+/** A valid `status` frame body, trimmed to display sizes; undefined otherwise. */
+function parseStatus(raw: unknown): AgentStatus | undefined {
+  if (!isJsonObject(raw)) return undefined;
+  const { state, since, tool, toolSince, activity } = raw;
+  if ((state !== "idle" && state !== "busy") || typeof since !== "number" || !Number.isFinite(since)) return undefined;
+  const status: AgentStatus = { state, since };
+  if (typeof tool === "string" && tool.length > 0) status.tool = tool.slice(0, 64);
+  if (typeof toolSince === "number" && Number.isFinite(toolSince)) status.toolSince = toolSince;
+  if (typeof activity === "string" && activity.length > 0) status.activity = activity.slice(0, 200);
+  return status;
 }
 
 async function readJsonObject(req: Request): Promise<Record<string, unknown>> {
@@ -150,6 +167,35 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
   /** GET /api/messages/:seq?waitMs= callers, resolved once `done` holds for every receipt of the message. */
   const receiptWaiters = new Map<number, Set<{ done: (r: Receipt) => boolean; resolve: () => void }>>();
 
+  /** Status of an agent: a busy connection beats an idle one; among equals, the latest report wins. */
+  const statusOf = (id: string): AgentStatus | undefined => {
+    let best: { status: AgentStatus; at: number } | undefined;
+    for (const ws of agentSockets.get(id) ?? []) {
+      const data = ws.data;
+      if (data.kind !== "agent" || !data.status) continue;
+      const at = data.statusAt ?? 0;
+      const busy = data.status.state === "busy";
+      const bestBusy = best?.status.state === "busy";
+      if (!best || (busy && !bestBusy) || (busy === bestBusy && at > best.at)) best = { status: data.status, at };
+    }
+    return best?.status;
+  };
+
+  /**
+   * Messages waiting for an agent's model, counted only since its status-reporting connection joined: a harness
+   * that reports status also reports `seen`; older sessions never do, so their deliveries would count forever.
+   */
+  const waitingOf = (id: string): number | undefined => {
+    let since: number | undefined;
+    for (const ws of agentSockets.get(id) ?? []) {
+      const data = ws.data;
+      if (data.kind === "agent" && data.reportingSince !== undefined) {
+        since = Math.min(since ?? data.reportingSince, data.reportingSince);
+      }
+    }
+    return since === undefined ? undefined : db.waitingCount(id, since);
+  };
+
   const toParticipant = (record: ParticipantRecord): Participant => {
     const connections = record.kind === "agent" ? (agentSockets.get(record.id)?.size ?? 0) : 0;
     const participant: Participant = {
@@ -163,6 +209,12 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
     if (record.harness !== null) participant.harness = record.harness;
     if (record.path !== null) participant.path = record.path;
     if (record.host !== null) participant.host = record.host;
+    if (record.kind === "agent") {
+      const status = statusOf(record.id);
+      if (status) participant.status = status;
+      const waiting = waitingOf(record.id);
+      if (waiting !== undefined) participant.waiting = waiting;
+    }
     return participant;
   };
 
@@ -173,6 +225,17 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
       .filter((p) => p.kind === "agent" || humanSet.has(p.id))
       .map(toParticipant)
       .sort((a, b) => Number(b.online) - Number(a.online) || a.id.localeCompare(b.id));
+
+  /** Status and waiting counts change often; viewers get them coalesced, agents not at all. */
+  let viewerParticipantsTimer: Timer | undefined;
+  const scheduleViewerParticipants = (): void => {
+    if (viewerParticipantsTimer || viewers.size === 0) return;
+    viewerParticipantsTimer = setTimeout(() => {
+      viewerParticipantsTimer = undefined;
+      const frame = JSON.stringify({ type: "participants", participants: listParticipants() });
+      for (const ws of viewers) ws.send(frame);
+    }, 250);
+  };
 
   /** Returns the participant if `id` may act as a writer: any stored agent or a configured human. */
   const knownParticipant = (id: string): ParticipantRecord | null => {
@@ -236,6 +299,7 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
   const recordReceipt = (agentId: string, seq: number, state: "ack" | "seen"): void => {
     const receipt = db.markReceipt(agentId, seq, state);
     if (!receipt || receipt.deliveredAt === null) return;
+    scheduleViewerParticipants();
     const message = db.getMessage(seq);
     if (!message) return;
     const update: ReceiptFrame = {
@@ -321,7 +385,20 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
       recordReceipt(data.id, frame.seq, frame.type);
       return;
     }
-    sendFrame(ws, { type: "error", error: 'Expected {"type":"ack"|"seen","seq":<integer>}' });
+    if (isJsonObject(frame) && frame.type === "status") {
+      const status = parseStatus(frame.status);
+      if (status) {
+        data.status = status;
+        data.statusAt = Date.now();
+        data.reportingSince ??= data.statusAt;
+        scheduleViewerParticipants();
+        return;
+      }
+    }
+    sendFrame(ws, {
+      type: "error",
+      error: 'Expected {"type":"ack"|"seen","seq":<integer>} or {"type":"status","status":{state,since,…}}',
+    });
   };
 
   const handleClose = (ws: Socket): void => {
@@ -737,6 +814,7 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
       stopped = true;
       for (const waiters of receiptWaiters.values()) for (const waiter of waiters) waiter.resolve();
       receiptWaiters.clear();
+      clearTimeout(viewerParticipantsTimer);
       await Promise.all([server.stop(true), secure?.stop(true)]);
       agentSockets.clear();
       viewers.clear();

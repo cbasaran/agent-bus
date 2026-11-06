@@ -9,7 +9,13 @@ import { realpathSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { deliveryHeader, deliveryHeaderSeqs, describeReceipts, formatAddress, quoteLine } from "../../protocol/src/address";
-import { DEFAULT_BUS_PORT, type FileRef, type PostMessageResponse, type ReceiptFrame } from "../../protocol/src/types";
+import {
+  DEFAULT_BUS_PORT,
+  type AgentStatus,
+  type FileRef,
+  type PostMessageResponse,
+  type ReceiptFrame,
+} from "../../protocol/src/types";
 import { BusConnection, type Delivery } from "./connection";
 
 interface ZodSchemaLike {
@@ -54,6 +60,8 @@ export interface MessageBusContext {
 
 /** How long a new session may take to join before the user is told it is not on the bus. */
 const JOIN_NOTICE_MS = 8000;
+/** Status reports are coalesced into one per this window (a batch of tool calls sends one report). */
+const STATUS_COALESCE_MS = 250;
 
 /** The slice of omp's `ExtensionAPI` used here. */
 export interface MessageBusApi {
@@ -62,6 +70,13 @@ export interface MessageBusApi {
   on(event: "session_shutdown", handler: () => void): void;
   /** Runs before every model request with the messages the model will get. */
   on(event: "context", handler: (event: { messages: unknown[] }) => void): void;
+  on(event: "agent_start", handler: () => void): void;
+  on(event: "agent_end", handler: (event: { willContinue?: boolean }) => void): void;
+  on(
+    event: "tool_execution_start",
+    handler: (event: { toolCallId: string; toolName: string; intent?: string }) => void
+  ): void;
+  on(event: "tool_execution_end", handler: (event: { toolCallId: string }) => void): void;
   registerTool(definition: {
     name: string;
     label: string;
@@ -206,6 +221,8 @@ export default function messageBus(pi: MessageBusApi): void {
     });
     connection = conn;
     conn.connect();
+    // Stored by the connection and sent once it has joined (and after every rejoin).
+    publishStatus();
     ctx.setTimeout?.(() => {
       if (connection !== conn || conn.connected) return;
       ctx.ui?.notify(
@@ -215,7 +232,62 @@ export default function messageBus(pi: MessageBusApi): void {
     }, JOIN_NOTICE_MS);
   });
 
+  // ---- Status for the bus (website, GET /api/state): idle/busy, running tool, latest intent. No model turns. ----
+  let busy = false;
+  let since = Date.now();
+  let activity: string | undefined;
+  const runningTools = new Map<string, { name: string; since: number }>();
+  let statusTimer: Timer | undefined;
+  const publishStatus = (): void => {
+    statusTimer = undefined;
+    const conn = connection;
+    if (!conn) return;
+    const status: AgentStatus = { state: busy ? "busy" : "idle", since };
+    const oldest = [...runningTools.values()].sort((a, b) => a.since - b.since)[0];
+    if (busy && oldest) {
+      status.tool = oldest.name;
+      status.toolSince = oldest.since;
+    }
+    if (busy && activity) status.activity = activity;
+    try {
+      conn.reportStatus(status);
+    } catch (err) {
+      console.error(`[message-bus] status report failed: ${(err as Error).message}`);
+    }
+  };
+  /** Coalesces bursts (a batch of tool calls) into one report a moment later. */
+  const statusChanged = (): void => {
+    if (!connection || statusTimer) return;
+    statusTimer = setTimeout(publishStatus, STATUS_COALESCE_MS);
+  };
+  pi.on("agent_start", () => {
+    if (!busy) {
+      busy = true;
+      since = Date.now();
+    }
+    statusChanged();
+  });
+  pi.on("agent_end", (event) => {
+    if (event.willContinue) return;
+    busy = false;
+    since = Date.now();
+    runningTools.clear();
+    activity = undefined;
+    statusChanged();
+  });
+  pi.on("tool_execution_start", (event) => {
+    runningTools.set(event.toolCallId, { name: event.toolName, since: Date.now() });
+    if (typeof event.intent === "string" && event.intent.trim()) activity = event.intent.trim();
+    statusChanged();
+  });
+  pi.on("tool_execution_end", (event) => {
+    runningTools.delete(event.toolCallId);
+    statusChanged();
+  });
+
   pi.on("session_shutdown", () => {
+    clearTimeout(statusTimer);
+    statusTimer = undefined;
     connection?.close();
     connection = undefined;
     sessionCtx = undefined;

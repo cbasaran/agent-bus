@@ -385,6 +385,16 @@ export class BusDatabase {
     return row ? toParticipant(row) : null;
   }
 
+  /** Messages `agentId`'s harness accepted since `since` that its model has not seen yet. */
+  waitingCount(agentId: string, since: number): number {
+    const row = this.db
+      .query<{ n: number }, [string, number]>(
+        "SELECT COUNT(*) AS n FROM receipts WHERE recipient = ?1 AND delivered_at >= ?2 AND seen_at IS NULL"
+      )
+      .get(agentId, since);
+    return row?.n ?? 0;
+  }
+
   listParticipants(): ParticipantRecord[] {
     return this.db
       .query<ParticipantRow, []>("SELECT * FROM participants ORDER BY id")

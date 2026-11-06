@@ -269,6 +269,25 @@ function relativeTime(ts: number): string {
   return dayFormat.format(ts);
 }
 
+/** "40 s", "14 min", "2 h 5 min". */
+function elapsed(ts: number): string {
+  const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+  if (s < 60) return `${s} s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m} min`;
+  return `${Math.floor(m / 60)} h${m % 60 ? ` ${m % 60} min` : ""}`;
+}
+
+/** Third sidebar line for an online agent that reports status: "busy 14 min · <intent>" / "idle 3 min". */
+function renderAgentStatus(agent: Participant): HTMLSpanElement | null {
+  const status = agent.status;
+  if (!agent.online || !status) return null;
+  const line = h("span", `agent-status agent-${status.state}`);
+  line.append(h("span", "agent-state", `${status.state} ${elapsed(status.since)}`));
+  if (status.state === "busy" && status.activity) line.append(` · ${status.activity}`);
+  return line;
+}
+
 // ---- Profile ----
 
 function setMe(id: string): void {
@@ -845,7 +864,16 @@ function renderAgentList(): void {
       text.append(name);
       const detail = agentDetail(agent, showHost);
       if (detail) text.append(h("span", "side-item-detail", detail));
+      const statusLine = renderAgentStatus(agent);
+      if (statusLine) text.append(statusLine);
       button.append(dot, text);
+      const waiting = agent.waiting ?? 0;
+      if (agent.online && waiting > 0) {
+        const badge = h("span", "badge badge-waiting", String(waiting));
+        badge.title = `${waiting} bus message${waiting === 1 ? "" : "s"} delivered, not seen by its model yet`;
+        button.append(badge);
+      }
+      const status = agent.online ? agent.status : undefined;
       const tip = [
         `@${agent.id}`,
         agent.harness ? `harness: ${agent.harness}` : "",
@@ -854,6 +882,10 @@ function renderAgentList(): void {
         agent.online
           ? `online (${agent.connections} connection${agent.connections === 1 ? "" : "s"})`
           : `last seen ${relativeTime(agent.lastSeenAt)}`,
+        status ? `${status.state} for ${elapsed(status.since)}` : "",
+        status?.tool ? `running ${status.tool}${status.toolSince ? ` for ${elapsed(status.toolSince)}` : ""}` : "",
+        status?.state === "busy" && status.activity ? `⎋ ${status.activity}` : "",
+        agent.online && waiting > 0 ? `${waiting} bus message${waiting === 1 ? "" : "s"} waiting (delivered, not seen yet)` : "",
         `@all: ${agent.settings.all}`,
       ];
       button.title = tip.filter(Boolean).join("\n");
