@@ -104,6 +104,7 @@ const dom = {
   docDownload: el<HTMLAnchorElement>("doc-download"),
   docClose: el<HTMLButtonElement>("doc-close"),
   docBody: el<HTMLDivElement>("doc-body"),
+  agentPanel: el<HTMLDivElement>("agent-panel"),
   replyBar: el<HTMLDivElement>("reply-bar"),
   replyBarText: el<HTMLSpanElement>("reply-bar-text"),
   replyCancel: el<HTMLButtonElement>("reply-cancel"),
@@ -284,14 +285,54 @@ function elapsed(ts: number): string {
   return `${Math.floor(m / 60)} h${m % 60 ? ` ${m % 60} min` : ""}`;
 }
 
-/** Third sidebar line for an online agent that reports status: "busy 14 min · <intent>" / "idle 3 min". */
+/** Third sidebar line, only while the agent reports it is busy: "busy 14 min". Details are on its page. */
 function renderAgentStatus(agent: Participant): HTMLSpanElement | null {
   const status = agent.status;
-  if (!agent.online || !status) return null;
-  const line = h("span", `agent-status agent-${status.state}`);
-  line.append(h("span", "agent-state", `${status.state} ${elapsed(status.since)}`));
-  if (status.state === "busy" && status.activity) line.append(` · ${status.activity}`);
-  return line;
+  if (!agent.online || status?.state !== "busy") return null;
+  return h("span", "agent-status agent-busy", `busy ${elapsed(status.since)}`);
+}
+
+/** Status panel at the top of an agent's own page (its one-to-one conversation or draft). */
+function renderAgentPanel(): void {
+  const agentId = currentDirectAgent();
+  const agent = agentId ? state.participants.find((p) => p.id === agentId && p.kind === "agent") : undefined;
+  if (!agent) {
+    dom.agentPanel.hidden = true;
+    return;
+  }
+  const rows: Array<[string, string | HTMLElement]> = [];
+  const status = agent.online ? agent.status : undefined;
+  if (!agent.online) {
+    rows.push(["State", `offline · last seen ${relativeTime(agent.lastSeenAt)}`]);
+  } else if (!status) {
+    rows.push(["State", "online · no status reported (session started before status reporting; restart it to see more)"]);
+  } else {
+    rows.push(["State", h("span", `agent-state agent-${status.state}-text`, `${status.state} for ${elapsed(status.since)}`)]);
+    if (status.state === "busy" && status.tool) {
+      rows.push(["Running", `${status.tool}${status.toolSince ? ` for ${elapsed(status.toolSince)}` : ""}`]);
+    }
+    if (status.state === "busy" && status.activity) rows.push(["Doing", status.activity]);
+  }
+  if (agent.online && agent.waiting !== undefined) {
+    rows.push([
+      "Waiting",
+      agent.waiting === 0
+        ? "no bus messages waiting"
+        : `${agent.waiting} bus message${agent.waiting === 1 ? "" : "s"} delivered, not seen by its model yet`,
+    ]);
+  }
+  const where = [agent.path ? shortPath(agent.path) : "", agent.host ?? "", agent.harness ?? ""].filter(Boolean).join(" · ");
+  if (where) rows.push(["Where", where]);
+  if (agent.connections > 1) rows.push(["Sessions", `${agent.connections} connected (same folder open twice)`]);
+  rows.push(["@all", agent.settings.all === "wake" ? "starts a turn" : "quiet (read at its next turn)"]);
+  const list = h("dl", "agent-panel-list");
+  for (const [label, value] of rows) {
+    const dd = h("dd");
+    dd.append(value);
+    list.append(h("dt", "", label), dd);
+  }
+  dom.agentPanel.replaceChildren(list);
+  dom.agentPanel.hidden = false;
 }
 
 // ---- Profile ----
@@ -755,6 +796,7 @@ function renderSidebar(): void {
   renderUnreadToggle();
   renderConversationList();
   renderAgentList();
+  renderAgentPanel();
   renderNotifyButton();
   applyTitle();
 }
@@ -873,13 +915,6 @@ function renderAgentList(): void {
       const statusLine = renderAgentStatus(agent);
       if (statusLine) text.append(statusLine);
       button.append(dot, text);
-      const waiting = agent.waiting ?? 0;
-      if (agent.online && waiting > 0) {
-        const badge = h("span", "badge badge-waiting", String(waiting));
-        badge.title = `${waiting} bus message${waiting === 1 ? "" : "s"} delivered, not seen by its model yet`;
-        button.append(badge);
-      }
-      const status = agent.online ? agent.status : undefined;
       const tip = [
         `@${agent.id}`,
         agent.harness ? `harness: ${agent.harness}` : "",
@@ -888,11 +923,7 @@ function renderAgentList(): void {
         agent.online
           ? `online (${agent.connections} connection${agent.connections === 1 ? "" : "s"})`
           : `last seen ${relativeTime(agent.lastSeenAt)}`,
-        status ? `${status.state} for ${elapsed(status.since)}` : "",
-        status?.tool ? `running ${status.tool}${status.toolSince ? ` for ${elapsed(status.toolSince)}` : ""}` : "",
-        status?.state === "busy" && status.activity ? `⎋ ${status.activity}` : "",
-        agent.online && waiting > 0 ? `${waiting} bus message${waiting === 1 ? "" : "s"} waiting (delivered, not seen yet)` : "",
-        `@all: ${agent.settings.all}`,
+        "Open its page for what it is doing now.",
       ];
       button.title = tip.filter(Boolean).join("\n");
       button.addEventListener("click", () => navigate({ kind: "draft", to: [agent.id] }));

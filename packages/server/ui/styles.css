@@ -329,22 +329,50 @@ button:disabled {
 
 .agent-status {
   font-size: 12px;
-  color: var(--sidebar-muted);
+  font-weight: 600;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+}
+
+.agent-busy,
+.agent-busy-text {
+  color: var(--warning);
+}
+
+.agent-idle-text {
+  color: var(--success);
 }
 
 .agent-state {
   font-weight: 600;
 }
 
-.agent-busy .agent-state {
-  color: var(--warning);
+.agent-panel {
+  margin-top: 10px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-raised);
+  font-size: 13px;
 }
 
-.agent-idle .agent-state {
-  color: var(--success);
+.agent-panel[hidden] {
+  display: none;
+}
+
+.agent-panel-list {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 16px;
+  margin: 0;
+}
+
+.agent-panel-list dt {
+  color: var(--muted);
+}
+
+.agent-panel-list dd {
+  margin: 0;
+  overflow-wrap: anywhere;
 }
 
 .side-item-time {
@@ -438,11 +466,6 @@ button:disabled {
   font-size: 11px;
   font-weight: 700;
   text-align: center;
-}
-
-.badge-waiting {
-  background: var(--warning);
-  color: #1b1405;
 }
 
 .attention-dot {
