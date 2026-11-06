@@ -123,6 +123,8 @@ const state = {
   unread: new Map<string, number>(),
   /** Unread messages for me: mentioning me, or in a one-to-one/group conversation I am a member of. */
   attention: new Map<string, number>(),
+  /** The most important of those: they mention me, or their conversation is just me and one other. */
+  urgent: new Map<string, number>(),
   /** Agents whose conversations the sidebar is limited to (all of them must be members). */
   filter: new Set<string>(),
   /** Show only conversations with unread messages (the open one stays). Remembered in this browser. */
@@ -369,6 +371,7 @@ function viewingNow(conversationId: string): boolean {
 function markRead(conversationId: string): void {
   state.unread.delete(conversationId);
   state.attention.delete(conversationId);
+  state.urgent.delete(conversationId);
   const conv = state.conversations.get(conversationId);
   if (!conv || !state.me || (state.readAt[conversationId] ?? 0) >= conv.lastMessageAt) return;
   state.readAt[conversationId] = conv.lastMessageAt;
@@ -393,6 +396,12 @@ function isForMe(message: Message, conv: Conversation): boolean {
   return mentionsMe(message.text) || (conv.kind === "group" && conv.members.includes(state.me));
 }
 
+/** Messages that get two red dots: they mention me, or their conversation has exactly two members, me included. */
+function isUrgent(message: Message, conv: Conversation): boolean {
+  if (!state.me || message.from === state.me) return false;
+  return mentionsMe(message.text) || (conv.kind === "group" && conv.members.length === 2 && conv.members.includes(state.me));
+}
+
 /**
  * Recomputes unread counts from the read markers (on boot, reconnect and profile switch). Conversations
  * without a marker count from the first visit; on the very first visit everything existing is read.
@@ -413,14 +422,21 @@ async function refreshUnread(): Promise<void> {
         `/api/conversations/${encodeURIComponent(conv.id)}/messages?limit=${PAGE_SIZE}`
       );
       const fresh = res.messages.filter((m) => m.createdAt > since(conv) && m.from !== state.me);
-      return { conv, unread: fresh.length, attention: fresh.filter((m) => isForMe(m, conv)).length };
+      return {
+        conv,
+        unread: fresh.length,
+        attention: fresh.filter((m) => isForMe(m, conv)).length,
+        urgent: fresh.filter((m) => isUrgent(m, conv)).length,
+      };
     })
   );
   state.unread.clear();
   state.attention.clear();
-  for (const { conv, unread, attention } of counts) {
+  state.urgent.clear();
+  for (const { conv, unread, attention, urgent } of counts) {
     if (unread > 0) state.unread.set(conv.id, unread);
     if (attention > 0) state.attention.set(conv.id, attention);
+    if (urgent > 0) state.urgent.set(conv.id, urgent);
   }
   if (state.view.kind === "conversation" && viewingNow(state.view.id)) markRead(state.view.id);
   renderSidebar();
@@ -497,7 +513,9 @@ let faviconState: boolean | undefined;
 function applyTitle(): void {
   let n = 0;
   for (const count of state.attention.values()) n += count;
-  document.title = n > 0 ? `● (${n}) ${titleBase}` : titleBase;
+  let urgent = 0;
+  for (const count of state.urgent.values()) urgent += count;
+  document.title = n > 0 ? `${urgent > 0 ? "●●" : "●"} (${n}) ${titleBase}` : titleBase;
   if (faviconState !== n > 0) {
     faviconState = n > 0;
     el<HTMLLinkElement>("favicon").href = faviconHref(faviconState);
@@ -679,6 +697,9 @@ function receive(message: Message, conversation: Conversation): void {
       if (isForMe(message, conversation)) {
         state.attention.set(conversation.id, (state.attention.get(conversation.id) ?? 0) + 1);
       }
+      if (isUrgent(message, conversation)) {
+        state.urgent.set(conversation.id, (state.urgent.get(conversation.id) ?? 0) + 1);
+      }
     }
     if (isForMe(message, conversation)) notify(message, conversation);
   } else if (message.from === state.me && isCurrent(conversation.id)) {
@@ -824,9 +845,14 @@ function renderConversationList(): void {
     const unread = state.unread.get(conv.id) ?? 0;
     if (unread > 0) {
       button.append(h("span", "badge", unread > 99 ? "99+" : String(unread)));
-      if ((state.attention.get(conv.id) ?? 0) > 0) {
+      if ((state.urgent.get(conv.id) ?? 0) > 0) {
+        const dots = h("span", "attention-dots");
+        dots.append(h("span", "attention-dot"), h("span", "attention-dot"));
+        dots.title = "For you directly: mentions you, or a conversation of just you and one other";
+        button.append(dots);
+      } else if ((state.attention.get(conv.id) ?? 0) > 0) {
         const dot = h("span", "attention-dot");
-        dot.title = "Mentions you, or is in a conversation you are in";
+        dot.title = "In a conversation you are in";
         button.append(dot);
       }
     }

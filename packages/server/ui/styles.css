@@ -478,6 +478,17 @@ button:disabled {
   box-shadow: 0 0 0 2px var(--sidebar);
 }
 
+.attention-dots {
+  flex: none;
+  display: inline-flex;
+  gap: 3px;
+  margin-left: -2px;
+}
+
+.attention-dots .attention-dot {
+  margin-left: 0;
+}
+
 .notify-btn {
   color: var(--sidebar-text);
   font-size: 13px;
