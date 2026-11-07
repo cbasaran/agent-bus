@@ -107,6 +107,8 @@ export interface MessageBusApi {
 }
 
 export const TOOL_NAME = "message-bus";
+/** Every argument the tool takes; anything else is rejected rather than silently ignored. */
+const TOOL_ARGS: readonly string[] = ["op", "message_id", "to", "message", "files", "key", "value"];
 
 /** `dir` is the temp directory (`os.tmpdir()`, symlinks resolved) or inside it. */
 function isUnderTempDir(dir: string): boolean {
@@ -343,15 +345,16 @@ export default function messageBus(pi: MessageBusApi): void {
       "op=reply: answer a message you received: `message_id` (the #number) plus `message` and/or `files`; it goes to that " +
       "message's conversation, so you never need to work out an address. " +
       "op=write: start or continue a conversation: `to` is \"@all\", \"@id\" or \"@{id1,id2}\" (a group; the same set always " +
-      "reuses the same conversation), plus `message`. " +
-      "op=send: `to` plus `files` (local paths) and an optional `message`. " +
+      "reuses the same conversation), plus `message` and/or `files` (local paths). " +
+      "op=send: the same as write, with `files` required. Unknown arguments are rejected and nothing is sent; every " +
+      "result says what the bus stored (text length, file names). " +
       "op=set: `key` + `value`; settings: all = wake | quiet (whether @all messages from other agents start a turn for you; default quiet).",
     parameters: z.object({
       op: z.enum(["reply", "write", "send", "set"]).describe("reply to a message, write a message, send files, or set a setting"),
       message_id: z.number().optional().describe("the #number of the message you answer (reply)"),
       to: z.string().optional().describe('"@all", "@id" or "@{id1,id2}" (write/send)'),
       message: z.string().optional().describe("message text (reply/write; optional caption for send)"),
-      files: z.array(z.string()).optional().describe("file paths, relative to the project folder or absolute (send; optional for reply)"),
+      files: z.array(z.string()).optional().describe("file paths, relative to the project folder or absolute (optional for reply and write)"),
       key: z.string().optional().describe("setting name (set)"),
       value: z.string().optional().describe("setting value (set)"),
     }),
@@ -360,14 +363,25 @@ export default function messageBus(pi: MessageBusApi): void {
       if (!conn) {
         throw new Error("This session is not on the message bus: subagents and sessions started in the temp directory do not join.");
       }
+      // omp passes arguments outside the schema through; ignoring them once stored an empty reply (`content` for `message`).
+      const unknown = Object.keys(params).filter((key) => !TOOL_ARGS.includes(key));
+      if (unknown.length > 0) {
+        throw new Error(`Unknown argument${unknown.length > 1 ? "s" : ""} ${unknown.join(", ")}; the arguments are ${TOOL_ARGS.join(", ")}. Nothing was sent.`);
+      }
       const result = (out: string): ToolResult => ({ content: [{ type: "text", text: `${out} (you are @${conn.id})` }] });
       const upload = async (files: string[]): Promise<FileRef[]> => {
         const refs: FileRef[] = [];
         for (const file of files) refs.push(await conn.uploadFile(path.resolve(ctx.cwd, file)));
         return refs;
       };
+      /** "text 812 chars, 2 files: a.patch, b.py" — what the bus stored, so a wrong argument shows at once. */
+      const contents = (res: PostMessageResponse): string => {
+        const files = res.message.files;
+        const text = res.message.text.length > 0 ? `text ${res.message.text.length} chars` : "no text";
+        return files.length > 0 ? `${text}, ${files.length} file${files.length === 1 ? "" : "s"}: ${files.map((f) => f.name).join(", ")}` : text;
+      };
       const sent = async (what: string, res: PostMessageResponse): Promise<ToolResult> =>
-        result(`${what} (conversation ${res.conversation.id}, message #${res.message.seq}): ${await deliveryStatus(conn, res)}.`);
+        result(`${what} (conversation ${res.conversation.id}, message #${res.message.seq}): ${contents(res)}; ${await deliveryStatus(conn, res)}.`);
 
       switch (params.op) {
         case "reply": {
@@ -379,14 +393,15 @@ export default function messageBus(pi: MessageBusApi): void {
           return sent(`Replied to #${params.message_id}`, res);
         }
         case "write": {
-          if (!params.to || !params.message) throw new Error("write needs `to` and `message`.");
-          return sent(`Sent to ${params.to}`, await conn.write({ to: params.to }, params.message));
+          if (!params.to || (!params.message && !params.files?.length)) throw new Error("write needs `to` and `message` (or `files`).");
+          const refs = await upload(params.files ?? []);
+          return sent(`Sent to ${params.to}`, await conn.write({ to: params.to }, params.message ?? "", refs.map((r) => r.id)));
         }
         case "send": {
           if (!params.to || !params.files?.length) throw new Error("send needs `to` and `files`.");
           const refs = await upload(params.files);
           const res = await conn.write({ to: params.to }, params.message ?? "", refs.map((r) => r.id));
-          return sent(`Sent ${refs.map((r) => r.name).join(", ")} to ${params.to}`, res);
+          return sent(`Sent to ${params.to}`, res);
         }
         case "set": {
           if (!params.key || params.value === undefined) throw new Error("set needs `key` and `value`.");

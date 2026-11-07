@@ -215,19 +215,33 @@ test("tool write/send reach other agents; received files are saved locally", asy
   const beta = await rawAgent("beta");
 
   const wrote = await alpha.run({ op: "write", to: "@beta", message: "ping from alpha" });
-  expect(wrote.content[0]!.text).toMatch(/^Sent to @beta \(conversation g_\w+, message #\d+\): seen by @beta\. \(you are @alpha\)$/);
+  expect(wrote.content[0]!.text).toMatch(
+    /^Sent to @beta \(conversation g_\w+, message #\d+\): text 15 chars; seen by @beta\. \(you are @alpha\)$/
+  );
   const dm = await beta.delivered("ping from alpha");
   expect(dm.replyTo).toBe("@alpha");
   expect(dm.conversation.addressed).toEqual(["alpha", "beta"]);
+
+  // An argument outside the tool's set is an error and nothing is sent (it used to store an empty message).
+  const before = (await (await fetch(`${bus.url}/api/state`)).json()) as { conversations: Array<{ lastMessageAt: number }> };
+  await expect(
+    alpha.run({ op: "reply", message_id: dm.message.seq, content: "wrong key" } as unknown as MessageBusToolParams)
+  ).rejects.toThrow(/Unknown argument content; .* Nothing was sent/);
+  const after = (await (await fetch(`${bus.url}/api/state`)).json()) as { conversations: Array<{ lastMessageAt: number }> };
+  expect(after.conversations.map((c) => c.lastMessageAt)).toEqual(before.conversations.map((c) => c.lastMessageAt));
 
   const filePath = path.join(dataDir, "projects", "alpha", "report.txt");
   mkdirSync(path.dirname(filePath), { recursive: true });
   writeFileSync(filePath, "results: 42\n");
   const sent = await alpha.run({ op: "send", to: "@{beta,can}", files: ["report.txt"], message: "the report" });
-  expect(sent.content[0]!.text).toContain("): seen by @beta.");
+  expect(sent.content[0]!.text).toContain("): text 10 chars, 1 file: report.txt; seen by @beta.");
   const withFile = await beta.delivered("the report");
   expect(withFile.message.files.map((f) => [f.name, f.size])).toEqual([["report.txt", 12]]);
   expect(withFile.replyTo).toBe("@{alpha,can}");
+  // write takes files too (they used to be dropped without a word).
+  const wroteFile = await alpha.run({ op: "write", to: "@beta", files: ["report.txt"], message: "again" });
+  expect(wroteFile.content[0]!.text).toContain("): text 5 chars, 1 file: report.txt;");
+  expect((await beta.delivered("again")).message.files.map((f) => f.name)).toEqual(["report.txt"]);
 
   await expect(alpha.run({ op: "write", to: "@nobody", message: "x" })).rejects.toThrow(/nobody/);
 
@@ -336,7 +350,9 @@ test("reply answers a message by its number, into that message's conversation", 
   const { message } = await post({ from: "beta", to: "@{alpha,can}", text: "please check run 7" });
   await alpha.injectedWith("please check run 7");
   const replied = await alpha.run({ op: "reply", message_id: message.seq, message: "run 7 is fine" });
-  expect(replied.content[0]!.text).toMatch(new RegExp(`^Replied to #${message.seq} \\(conversation ${message.conversationId}, message #\\d+\\): seen by @beta\\.`));
+  expect(replied.content[0]!.text).toMatch(
+    new RegExp(`^Replied to #${message.seq} \\(conversation ${message.conversationId}, message #\\d+\\): text 13 chars; seen by @beta\\.`)
+  );
   expect((await beta.delivered("run 7 is fine")).conversation.id).toBe(message.conversationId);
 
   // Replies to @all stay in @all.

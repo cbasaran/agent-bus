@@ -55,8 +55,9 @@ SCHEMA = {
         "is no read). op=reply: answer a message you received: `message_id` (the #number) plus `message` and/or "
         "`files`; it goes to that message's conversation, so you never need to work out an address. "
         "op=write: start or continue a conversation: `to` is \"@all\", \"@id\" or \"@{id1,id2}\" (a group; the "
-        "same set always reuses the same conversation), plus `message`. op=send: `to` plus `files` (local paths) "
-        "and an optional `message`. op=set: `key` + `value`; settings: all = wake | quiet (whether @all messages "
+        "same set always reuses the same conversation), plus `message` and/or `files` (local paths). op=send: the same "
+        "as write, with `files` required. Unknown arguments are rejected and nothing is sent; every result says what the "
+        "bus stored (text length, file names). op=set: `key` + `value`; settings: all = wake | quiet (whether @all messages "
         "from other agents start a turn for you; default quiet)."
     ),
     "parameters": {
@@ -68,7 +69,7 @@ SCHEMA = {
             "to": {"type": "string", "description": "\"@all\", \"@id\" or \"@{id1,id2}\" (write/send)"},
             "message": {"type": "string", "description": "message text (reply/write; optional caption for send)"},
             "files": {"type": "array", "items": {"type": "string"},
-                      "description": "absolute file paths (send; optional for reply)"},
+                      "description": "absolute file paths (optional for reply and write)"},
             "key": {"type": "string", "description": "setting name (set)"},
             "value": {"type": "string", "description": "setting value (set)"},
         },
@@ -382,11 +383,23 @@ def register(ctx: Any) -> None:
     client = BusClient(url, name)
 
     def handle(args: dict, **_: Any) -> str:
+        # Arguments outside the schema used to be ignored, which stored empty messages (`content` for `message`).
+        unknown = [k for k in args if k not in SCHEMA["parameters"]["properties"]]
+        if unknown:
+            raise ValueError(f"Unknown argument{'s' if len(unknown) > 1 else ''} {', '.join(unknown)}; the arguments are "
+                             f"{', '.join(SCHEMA['parameters']['properties'])}. Nothing was sent.")
         op = args.get("op")
+
+        def contents(res: dict) -> str:
+            text, files = res["message"]["text"], res["message"]["files"]
+            out = f"text {len(text)} chars" if text else "no text"
+            if files:
+                out += f", {len(files)} file{'' if len(files) == 1 else 's'}: {', '.join(f['name'] for f in files)}"
+            return out
 
         def sent(what: str, res: dict) -> str:
             return (f"{what} (conversation {res['conversation']['id']}, message #{res['message']['seq']}): "
-                    f"{client.delivery_status(res)}. (you are @{client.my_id()})")
+                    f"{contents(res)}; {client.delivery_status(res)}. (you are @{client.my_id()})")
 
         if op == "reply":
             if args.get("message_id") is None or not (args.get("message") or args.get("files")):
@@ -394,16 +407,12 @@ def register(ctx: Any) -> None:
             refs = [client.upload(p) for p in args.get("files") or []]
             res = client.write({"replyToSeq": int(args["message_id"])}, args.get("message") or "", [r["id"] for r in refs])
             return sent(f"Replied to #{args['message_id']}", res)
-        if op == "write":
-            if not args.get("to") or not args.get("message"):
-                raise ValueError("write needs `to` and `message`.")
-            return sent(f"Sent to {args['to']}", client.write({"to": args["to"]}, args["message"]))
-        if op == "send":
-            if not args.get("to") or not args.get("files"):
-                raise ValueError("send needs `to` and `files`.")
-            refs = [client.upload(p) for p in args["files"]]
+        if op in ("write", "send"):
+            if not args.get("to") or not (args.get("files") if op == "send" else args.get("message") or args.get("files")):
+                raise ValueError("send needs `to` and `files`." if op == "send" else "write needs `to` and `message` (or `files`).")
+            refs = [client.upload(p) for p in args.get("files") or []]
             res = client.write({"to": args["to"]}, args.get("message") or "", [r["id"] for r in refs])
-            return sent(f"Sent {', '.join(r['name'] for r in refs)} to {args['to']}", res)
+            return sent(f"Sent to {args['to']}", res)
         if op == "set":
             if not args.get("key") or args.get("value") is None:
                 raise ValueError("set needs `key` and `value`.")
