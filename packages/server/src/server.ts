@@ -20,6 +20,7 @@ import {
   type HealthResponse,
   type Message,
   type MessagesResponse,
+  type ReadResponse,
   type ParsedAddress,
   type Participant,
   type PostMessageResponse,
@@ -65,6 +66,9 @@ const BACKLOG_LIMIT = 100;
 const MAX_RECEIPT_WAIT_MS = 30_000;
 const DEFAULT_PAGE = 100;
 const MAX_PAGE = 500;
+/** Default and largest page for the agents' reading endpoints (their results go into a model's context). */
+const DEFAULT_READ = 20;
+const MAX_READ = 100;
 const SETTING_VALUES = ["wake", "quiet"] as const;
 
 const CORS_HEADERS: Record<string, string> = {
@@ -510,18 +514,100 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
     return { messages: db.listMessages(conversation.id, beforeSeq, limit) };
   };
 
+  // ---- Reading for agents (no turns for anyone): GET /api/inbox, /api/history, /api/search ----
+
+  const intParam = (url: URL, key: string, min: number): number | null => {
+    const raw = url.searchParams.get(key);
+    if (raw === null || raw === "") return null;
+    const value = Number(raw);
+    if (!Number.isSafeInteger(value) || value < min) throw new HttpError(400, `${key} must be an integer ≥ ${min}`);
+    return value;
+  };
+
+  const readLimit = (url: URL): number => Math.min(intParam(url, "limit", 1) ?? DEFAULT_READ, MAX_READ);
+
+  /** The reader (`param`, a known participant) and whether it reads everything (`scope=all`) or its own conversations. */
+  const reader = (url: URL, param: string): { id: string; all: boolean } => {
+    const id = (url.searchParams.get(param) ?? "").trim().toLowerCase();
+    if (!knownParticipant(id)) throw new HttpError(400, `Unknown participant "${id}" in ${param}. Known ids: ${knownIds().join(", ")}`);
+    const scope = url.searchParams.get("scope") ?? "mine";
+    if (scope !== "mine" && scope !== "all") throw new HttpError(400, 'scope must be "mine" or "all"');
+    return { id, all: scope === "all" };
+  };
+
+  const withConversations = (messages: Message[]): ReadResponse => {
+    const ids = [...new Set(messages.map((m) => m.conversationId))];
+    return { messages, conversations: ids.map((id) => db.getConversation(id)).filter((c): c is Conversation => c !== null) };
+  };
+
+  /** Messages sent to `for` (it has a receipt), newest `limit`, after `sinceSeq`. */
+  const getInbox = (url: URL): ReadResponse => {
+    const { id } = reader(url, "for");
+    return withConversations(db.inboxFor(id, intParam(url, "sinceSeq", 0) ?? 0, readLimit(url)));
+  };
+
+  /** The newest `limit` messages (before `beforeSeq`) of the conversation `to` resolves to for `from`, or `conversationId`. */
+  const getHistory = (url: URL): ReadResponse => {
+    const me = reader(url, "from");
+    const to = url.searchParams.get("to");
+    const conversationId = url.searchParams.get("conversationId");
+    let conversation: Conversation | null;
+    if (conversationId) {
+      conversation = db.getConversation(conversationId);
+      if (!conversation) throw new HttpError(404, `Unknown conversation "${conversationId}"`);
+    } else if (to) {
+      let parsed: ParsedAddress;
+      try {
+        parsed = parseAddress(to);
+      } catch (error) {
+        throw new HttpError(400, error instanceof Error ? error.message : String(error));
+      }
+      if (parsed.kind === "all") {
+        conversation = db.getConversation(ALL_CONVERSATION_ID);
+      } else {
+        const unknown = parsed.ids.filter((id) => !knownParticipant(id));
+        if (unknown.length > 0) {
+          throw new HttpError(400, `Unknown id${unknown.length > 1 ? "s" : ""} ${unknown.join(", ")}. Known ids: ${knownIds().join(", ")}`);
+        }
+        conversation = db.findGroup([me.id, ...parsed.ids]);
+        if (!conversation) throw new HttpError(404, `No conversation of @${me.id} with ${to} yet`);
+      }
+    } else {
+      throw new HttpError(400, "Give to (an address) or conversationId");
+    }
+    if (!conversation) throw new Error("The all conversation is missing");
+    if (!me.all && conversation.kind === "group" && !conversation.members.includes(me.id)) {
+      throw new HttpError(403, `@${me.id} is not in conversation ${conversation.id}; read it with scope=all`);
+    }
+    return withConversations(db.listMessages(conversation.id, intParam(url, "beforeSeq", 1), readLimit(url)));
+  };
+
+  /** Messages whose text contains `q` (and from `sender`), newest `limit`, in the reader's conversations or all. */
+  const getSearch = (url: URL): ReadResponse => {
+    const me = reader(url, "from");
+    const sender = url.searchParams.get("sender")?.trim().replace(/^@/, "").toLowerCase() || null;
+    const q = url.searchParams.get("q") ?? "";
+    if (!q.trim() && !sender) throw new HttpError(400, "Give q (text to find) and/or sender");
+    return withConversations(db.searchMessages(q.trim(), sender, me.all ? null : db.conversationIdsOf(me.id), readLimit(url)));
+  };
+
   /**
-   * The message with its receipts; with `waitMs`, first waits (≤ 30 s) until every recipient has it
-   * (`until=delivered`, default) or has seen it (`until=seen`).
+   * The message with its receipts and its conversation; with `waitMs`, first waits (≤ 30 s) until every recipient
+   * has it (`until=delivered`, default) or has seen it (`until=seen`).
    */
-  const getMessageReceipts = async (seq: number, url: URL): Promise<{ message: Message }> => {
+  const getMessageReceipts = async (seq: number, url: URL): Promise<{ message: Message; conversation: Conversation }> => {
     const current = db.getMessage(seq);
     if (!current) throw new HttpError(404, `Unknown message ${seq}`);
+    const withConversation = (message: Message): { message: Message; conversation: Conversation } => {
+      const conversation = db.getConversation(message.conversationId);
+      if (!conversation) throw new Error(`Conversation ${message.conversationId} of message ${seq} is missing`);
+      return { message, conversation };
+    };
     const until = url.searchParams.get("until") ?? "delivered";
     if (until !== "delivered" && until !== "seen") throw new HttpError(400, 'until must be "delivered" or "seen"');
     const done = until === "seen" ? (r: Receipt) => r.seenAt !== null : (r: Receipt) => r.deliveredAt !== null;
     const waitMs = Math.min(Math.max(Number(url.searchParams.get("waitMs") ?? 0) || 0, 0), MAX_RECEIPT_WAIT_MS);
-    if (waitMs === 0 || current.receipts.every(done)) return { message: current };
+    if (waitMs === 0 || current.receipts.every(done)) return withConversation(current);
     const { promise, resolve } = Promise.withResolvers<void>();
     const waiter = { done, resolve };
     let waiters = receiptWaiters.get(seq);
@@ -534,7 +620,7 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
     if (waiters.size === 0) receiptWaiters.delete(seq);
     const latest = db.getMessage(seq);
     if (!latest) throw new HttpError(404, `Unknown message ${seq}`);
-    return { message: latest };
+    return withConversation(latest);
   };
 
   const postMessage = async (req: Request): Promise<PostMessageResponse> => {
@@ -765,6 +851,9 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
       return json(health);
     }
     if (method === "GET" && pathname === "/api/state") return json(getState());
+    if (method === "GET" && pathname === "/api/inbox") return json(getInbox(url));
+    if (method === "GET" && pathname === "/api/history") return json(getHistory(url));
+    if (method === "GET" && pathname === "/api/search") return json(getSearch(url));
     const messagesMatch = /^\/api\/conversations\/([^/]+)\/messages$/.exec(pathname);
     if (method === "GET" && messagesMatch?.[1]) {
       return json(getMessages(decodeURIComponent(messagesMatch[1]), url));

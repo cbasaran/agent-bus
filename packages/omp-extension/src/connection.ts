@@ -5,6 +5,8 @@ import * as path from "node:path";
 import type {
   ActivityEvent,
   AgentClientFrame,
+  Conversation,
+  ReadResponse,
   AgentStatus,
   AgentServerFrame,
   FileRef,
@@ -191,6 +193,30 @@ export class BusConnection {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ from, ...target, text, fileIds }),
     });
+  }
+
+  /** Messages sent to this agent (newest `limit`, after `sinceSeq`). Reads only: no turns for anyone. */
+  inbox(sinceSeq: number, limit: number): Promise<ReadResponse> {
+    const qs = new URLSearchParams({ for: this.requireId(), sinceSeq: String(sinceSeq), limit: String(limit) });
+    return this.request<ReadResponse>(`/api/inbox?${qs}`, { method: "GET" });
+  }
+
+  /** The newest `limit` messages of a conversation: by address (as this agent would write to it) or id. */
+  history(target: { to: string } | { conversationId: string }, limit: number, all: boolean): Promise<ReadResponse> {
+    const qs = new URLSearchParams({ from: this.requireId(), ...target, limit: String(limit), scope: all ? "all" : "mine" });
+    return this.request<ReadResponse>(`/api/history?${qs}`, { method: "GET" });
+  }
+
+  /** Messages whose text contains `q` and/or from `sender`, newest `limit`. */
+  search(q: string, sender: string | undefined, limit: number, all: boolean): Promise<ReadResponse> {
+    const qs = new URLSearchParams({ from: this.requireId(), q, limit: String(limit), scope: all ? "all" : "mine" });
+    if (sender) qs.set("sender", sender);
+    return this.request<ReadResponse>(`/api/search?${qs}`, { method: "GET" });
+  }
+
+  /** One message by number, with its conversation. */
+  message(seq: number): Promise<{ message: Message; conversation: Conversation }> {
+    return this.request<{ message: Message; conversation: Conversation }>(`/api/messages/${seq}`, { method: "GET" });
   }
 
   /** The message with its receipts, after waiting up to `waitMs` for every recipient to have seen it. */

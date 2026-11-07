@@ -51,27 +51,38 @@ SCHEMA = {
         "of a shared resource). Do not send acknowledgements, thanks or \"noted/received\" messages, and do not restate "
         "other agents' messages; not replying is the default. Send to the fewest recipients who need it: @id or @{ids} "
         "rather than @all, and only the agents who have to read or act on it. Messages for you "
-        "arrive in this conversation on their own as \"[message-bus] #<message_id> @sender → …\" (never poll; there "
-        "is no read). op=reply: answer a message you received: `message_id` (the #number) plus `message` and/or "
+        "arrive in this conversation on their own as \"[message-bus] #<message_id> @sender → …\" (never poll, and never "
+        "read the bus database; use the read ops below). op=reply: answer a message you received: `message_id` (the #number) plus `message` and/or "
         "`files`; it goes to that message's conversation, so you never need to work out an address. "
         "op=write: start or continue a conversation: `to` is \"@all\", \"@id\" or \"@{id1,id2}\" (a group; the "
         "same set always reuses the same conversation), plus `message` and/or `files` (local paths). op=send: the same "
         "as write, with `files` required. Unknown arguments are rejected and nothing is sent; every result says what the "
         "bus stored (text length, file names). op=set: `key` + `value`; settings: all = wake | quiet (whether @all messages "
-        "from other agents start a turn for you; default quiet)."
+        "from other agents start a turn for you; default quiet). "
+        "Reading (no turns for anyone, only your own tokens): op=inbox: messages sent to you, newest `limit` (default 20), "
+        "optionally only after #`since`. op=show: one message by `message_id`, in full, with its files downloaded. "
+        "op=history: the last `limit` messages of a conversation: `to` (as you would write to it) or the conversation of "
+        "`message_id`. op=search: messages whose text contains `query` and/or from `sender`, newest `limit`, as one-line hits. "
+        "show, history and search cover the conversations you are in (and @all); add scope=\"all\" for every conversation."
     ),
     "parameters": {
         "type": "object",
         "properties": {
-            "op": {"type": "string", "enum": ["reply", "write", "send", "set"],
-                   "description": "reply to a message, write a message, send files, or set a setting"},
-            "message_id": {"type": "integer", "description": "the #number of the message you answer (reply)"},
-            "to": {"type": "string", "description": "\"@all\", \"@id\" or \"@{id1,id2}\" (write/send)"},
+            "op": {"type": "string", "enum": ["reply", "write", "send", "set", "inbox", "show", "history", "search"],
+                   "description": "reply/write/send a message, set a setting, or read: inbox, show, history, search"},
+            "message_id": {"type": "integer", "description": "a message's #number (reply, show, history)"},
+            "to": {"type": "string", "description": "\"@all\", \"@id\" or \"@{id1,id2}\" (write/send, history)"},
             "message": {"type": "string", "description": "message text (reply/write; optional caption for send)"},
             "files": {"type": "array", "items": {"type": "string"},
                       "description": "absolute file paths (optional for reply and write)"},
             "key": {"type": "string", "description": "setting name (set)"},
             "value": {"type": "string", "description": "setting value (set)"},
+            "query": {"type": "string", "description": "text to find, case-insensitive (search)"},
+            "sender": {"type": "string", "description": "only messages from this id (search)"},
+            "since": {"type": "integer", "description": "only messages after this #number (inbox)"},
+            "limit": {"type": "integer", "description": "how many messages, default 20, at most 100 (inbox, history, search)"},
+            "scope": {"type": "string", "enum": ["mine", "all"],
+                      "description": "\"mine\" (default): your conversations and @all; \"all\": every conversation"},
         },
         "required": ["op"],
     },
@@ -91,6 +102,58 @@ def quote_line(quote: dict) -> str:
     n = int(quote.get("files") or 0)
     files = f" [{n} file{'' if n == 1 else 's'}]" if n > 0 else ""
     return f"↩ re #{quote['seq']} @{quote['from']}: {text or '(no text)'}{files}"
+
+
+READ_TEXT_CHARS = 3000
+READ_BUDGET_CHARS = 30_000
+
+
+def _utc(ms: int) -> str:
+    return time.strftime("%Y-%m-%d %H:%MZ", time.gmtime(ms / 1000))
+
+
+def _where(message: dict, conversations: dict) -> str:
+    conversation = conversations.get(message["conversationId"])
+    if not conversation:
+        return message["conversationId"]
+    return "@all" if conversation["kind"] == "all" else _format_address(conversation["members"])
+
+
+def format_read_message(message: dict, conversations: dict, max_text: int, saved: list[str] | None = None) -> str:
+    """Same text as formatReadMessage in packages/omp-extension/src/index.ts (not a delivery header, on purpose)."""
+    lines = [f"#{message['seq']} @{message['from']} → {_where(message, conversations)} · {_utc(message['createdAt'])}"]
+    if message.get("quote"):
+        lines.append(quote_line(message["quote"]))
+    text = message.get("text") or ""
+    if text:
+        lines.append(text if len(text) <= max_text else
+                     f"{text[:max_text]}… ({len(text)} chars; op=show message_id {message['seq']} for all)")
+    for i, f in enumerate(message.get("files") or []):
+        lines.append(f"File: {saved[i] if saved and i < len(saved) else f['name']} ({f['name']}, {f['size']} B)")
+    return "\n".join(lines)
+
+
+def format_search_hit(message: dict, conversations: dict, query: str) -> str:
+    """Same text as formatSearchHit in packages/omp-extension/src/index.ts."""
+    flat = " ".join((message.get("text") or "").split())
+    at = flat.lower().find(query.lower()) if query else 0
+    start = max(0, at - 80)
+    snippet = ("…" if start > 0 else "") + flat[start:start + 200] + ("…" if start + 200 < len(flat) else "")
+    files = f" [{', '.join(f['name'] for f in message['files'])}]" if message.get("files") else ""
+    return (f"#{message['seq']} · {_utc(message['createdAt'])} · @{message['from']} → {_where(message, conversations)}: "
+            f"{snippet or '(no text)'}{files}")
+
+
+def within_budget(entries: list[str], separator: str) -> tuple[str, int]:
+    """Joins entries newest-last within the budget, dropping the oldest first."""
+    kept: list[str] = []
+    size = 0
+    for entry in reversed(entries):
+        if kept and size + len(entry) > READ_BUDGET_CHARS:
+            break
+        kept.insert(0, entry)
+        size += len(entry) + len(separator)
+    return separator.join(kept), len(entries) - len(kept)
 
 
 def describe_receipts(receipts: list[dict]) -> str:
@@ -176,6 +239,11 @@ class BusClient:
     def set(self, key: str, value: str) -> dict:
         body = {"from": self.my_id(), "key": key, "value": value}
         return self._request("POST", "/api/settings", json.dumps(body).encode())
+
+    def get(self, path: str, params: dict) -> dict:
+        """GET a reading endpoint (no turns for anyone); None values are left out."""
+        qs = urllib.parse.urlencode({k: v for k, v in params.items() if v is not None})
+        return self._request("GET", f"{path}?{qs}")
 
     def delivery_status(self, sent: dict) -> str:
         """Waits for receipts of a just-written message; remembers late group recipients."""
@@ -418,7 +486,53 @@ def register(ctx: Any) -> None:
                 raise ValueError("set needs `key` and `value`.")
             res = client.set(args["key"], args["value"])
             return f"Settings now: {json.dumps(res['participant']['settings'])}. (you are @{client.my_id()})"
-        raise ValueError("op must be reply, write, send or set.")
+        me = client.my_id()
+        scope = "all" if args.get("scope") == "all" else "mine"
+        limit = int(args.get("limit") or 20)
+
+        def listed(res: dict, what: str) -> str:
+            by_id = {c["id"]: c for c in res["conversations"]}
+            text, dropped = within_budget([format_read_message(m, by_id, READ_TEXT_CHARS) for m in res["messages"]], "\n\n")
+            more = f" ({dropped} older ones left out; use a smaller limit)" if dropped else ""
+            return f"{len(res['messages'])} {what}{more}:\n\n{text}\n (you are @{me})"
+
+        if op == "inbox":
+            res = client.get("/api/inbox", {"for": me, "sinceSeq": args.get("since") or 0, "limit": limit})
+            if not res["messages"]:
+                return f"No messages for you{' after #' + str(args['since']) if args.get('since') else ''}. (you are @{me})"
+            return listed(res, "messages sent to you")
+        if op == "show":
+            if args.get("message_id") is None:
+                raise ValueError("show needs `message_id`.")
+            res = client.get(f"/api/messages/{int(args['message_id'])}", {})
+            message, conversation = res["message"], res["conversation"]
+            if scope != "all" and conversation["kind"] == "group" and me not in conversation["members"]:
+                raise ValueError(f"#{message['seq']} is in a conversation you are not in "
+                                 f"({_format_address(conversation['members'])}); add scope \"all\" to read it.")
+            saved = [client.download(f, STATE_DIR / "received" / me) for f in message.get("files") or []]
+            return f"{format_read_message(message, {conversation['id']: conversation}, 10 ** 9, saved)}\n (you are @{me})"
+        if op == "history":
+            params: dict = {"from": me, "limit": limit, "scope": scope}
+            if args.get("to"):
+                params["to"] = args["to"]
+            elif args.get("message_id") is not None:
+                params["conversationId"] = client.get(f"/api/messages/{int(args['message_id'])}", {})["message"]["conversationId"]
+            else:
+                raise ValueError("history needs `to` (an address) or `message_id` (that message's conversation).")
+            res = client.get("/api/history", params)
+            return listed(res, "messages, oldest first") if res["messages"] else f"No messages in that conversation yet. (you are @{me})"
+        if op == "search":
+            if not (args.get("query") or "").strip() and not args.get("sender"):
+                raise ValueError("search needs `query` and/or `sender`.")
+            res = client.get("/api/search", {"from": me, "q": args.get("query") or "", "sender": args.get("sender"),
+                                              "limit": limit, "scope": scope})
+            if not res["messages"]:
+                return f"No matching messages. (you are @{me})"
+            by_id = {c["id"]: c for c in res["conversations"]}
+            text, dropped = within_budget([format_search_hit(m, by_id, args.get("query") or "") for m in res["messages"]], "\n")
+            more = f" ({dropped} older ones left out)" if dropped else ""
+            return f"{len(res['messages'])} matching messages, oldest first{more}:\n{text}\n (you are @{me})"
+        raise ValueError("op must be reply, write, send, set, inbox, show, history or search.")
 
     ctx.register_tool(name=TOOL_NAME, toolset="message_bus", schema=SCHEMA, handler=handle,
                       description=SCHEMA["description"], emoji="📨")

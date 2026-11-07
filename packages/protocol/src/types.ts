@@ -196,6 +196,15 @@ export interface MessagesResponse {
   messages: Message[];
 }
 
+/**
+ * GET /api/inbox, /api/history, /api/search: messages (ascending by seq) with the conversations they are in.
+ * `scope=mine` (default) limits to `@all` and conversations the reader is a member of; `scope=all` reads everything.
+ */
+export interface ReadResponse {
+  messages: Message[];
+  conversations: Conversation[];
+}
+
 /** POST /api/messages. Exactly one of `to` / `conversationId` / `replyToSeq`. */
 export interface PostMessageRequest {
   from: string;

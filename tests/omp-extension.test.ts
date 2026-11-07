@@ -455,3 +455,47 @@ test("live output streams only while someone watches the agent's page: replay fi
   // Nothing of this reached the model.
   expect(alpha.injected).toEqual([]);
 });
+
+test("read ops: inbox, show, history and search, mine by default and all on request, without starting turns", async () => {
+  const alpha = await startSession("alpha");
+  const beta = await rawAgent("beta");
+  const first = (await post({ from: "can", to: "@alpha", text: "first: please look at the GPU 3 claim" })).message;
+  const second = (await post({ from: "beta", to: "@{alpha,can}", text: "second, with the long report" })).message;
+  await post({ from: "beta", to: "@umit", text: "private to umit about GPU 3" }); // alpha is not in this one
+  await alpha.injectedWith("second, with the long report");
+  const injectedBefore = alpha.injected.length;
+  const text = async (params: Parameters<FakeOmp["run"]>[0]) => (await alpha.run(params)).content[0]!.text;
+
+  const inbox = await text({ op: "inbox" });
+  expect(inbox).toContain("2 messages sent to you");
+  expect(inbox).toContain(`#${first.seq} @can → @{alpha,can}`);
+  expect(inbox).not.toContain("[message-bus]"); // read results must not look like deliveries
+  expect(await text({ op: "inbox", since: first.seq })).toContain("1 messages sent to you");
+
+  expect(await text({ op: "show", message_id: first.seq })).toContain("first: please look at the GPU 3 claim");
+  const privateSeq = (await post({ from: "umit", to: "@beta", text: "umit to beta" })).message.seq;
+  await expect(alpha.run({ op: "show", message_id: privateSeq })).rejects.toThrow(/not in .*scope "all"/);
+  expect(await text({ op: "show", message_id: privateSeq, scope: "all" })).toContain("umit to beta");
+
+  // One thread per set of agents: can→alpha is the alpha thread, beta→{alpha,can} the alpha+beta thread.
+  const history = await text({ op: "history", to: "@can", limit: 5 });
+  expect(history).toContain("first: please look");
+  expect(history).not.toContain("second,");
+  expect(await text({ op: "history", to: "@beta" })).toContain("second, with the long report");
+  expect(await text({ op: "history", message_id: second.seq })).toContain("1 messages, oldest first");
+  await expect(alpha.run({ op: "history", to: "@nobody" })).rejects.toThrow(/Unknown id nobody/);
+  const gamma = await rawAgent("gamma");
+  await expect(alpha.run({ op: "history", to: "@gamma" })).rejects.toThrow(/No conversation of @alpha with @gamma/);
+  gamma.ws.close();
+
+  // Search: alpha's conversations and @all by default; every conversation with scope "all".
+  const mine = await text({ op: "search", query: "gpu 3" });
+  expect(mine).toContain("1 matching messages");
+  expect(mine).toContain("@can → @{alpha,can}: first: please look at the GPU 3 claim");
+  expect(await text({ op: "search", query: "gpu 3", scope: "all" })).toContain("2 matching messages");
+  expect(await text({ op: "search", sender: "beta", scope: "all" })).toContain("private to umit");
+
+  // Reading delivered nothing new and started no turn.
+  expect(alpha.injected.length).toBe(injectedBefore);
+  beta.ws.close();
+});

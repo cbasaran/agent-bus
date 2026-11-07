@@ -8,12 +8,15 @@
 import { realpathSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { deliveryHeader, deliveryHeaderSeqs, describeReceipts, formatAddress, quoteLine } from "../../protocol/src/address";
+import { deliveryHeader, deliveryHeaderSeqs, describeReceipts, formatAddress, formatUtc, quoteLine } from "../../protocol/src/address";
 import {
   DEFAULT_BUS_PORT,
   type AgentStatus,
+  type Conversation,
   type FileRef,
+  type Message,
   type PostMessageResponse,
+  type ReadResponse,
   type ReceiptFrame,
 } from "../../protocol/src/types";
 import { ActivityLog, contentText, contentThinking } from "./activity";
@@ -34,13 +37,18 @@ interface ZodLike {
 }
 
 export interface MessageBusToolParams {
-  op: "reply" | "write" | "send" | "set";
+  op: "reply" | "write" | "send" | "set" | "inbox" | "show" | "history" | "search";
   message_id?: number;
   to?: string;
   message?: string;
   files?: string[];
   key?: string;
   value?: string;
+  query?: string;
+  sender?: string;
+  since?: number;
+  limit?: number;
+  scope?: "mine" | "all";
 }
 
 interface ToolResult {
@@ -108,7 +116,9 @@ export interface MessageBusApi {
 
 export const TOOL_NAME = "message-bus";
 /** Every argument the tool takes; anything else is rejected rather than silently ignored. */
-const TOOL_ARGS: readonly string[] = ["op", "message_id", "to", "message", "files", "key", "value"];
+const TOOL_ARGS: readonly string[] = [
+  "op", "message_id", "to", "message", "files", "key", "value", "query", "sender", "since", "limit", "scope",
+];
 
 /** `dir` is the temp directory (`os.tmpdir()`, symlinks resolved) or inside it. */
 function isUnderTempDir(dir: string): boolean {
@@ -134,6 +144,54 @@ export function formatDelivery(delivery: Delivery, savedFiles: string[]): string
   });
   lines.push(`(Reply only if they need something from you: ${TOOL_NAME} reply, message_id ${message.seq} → ${replyTo}.)`);
   return lines.join("\n");
+}
+
+/** Per-message text shown by inbox and history; `show` gives all of it. */
+const READ_TEXT_CHARS = 3000;
+/** Total size of one read result, so a large page cannot flood the context (older messages are dropped first). */
+const READ_BUDGET_CHARS = 30_000;
+
+/**
+ * One message as the read ops list it. Deliberately not the delivery header (`[message-bus] #n @…`): read results
+ * must not look like new messages, and the seen-detection keys on that header.
+ */
+export function formatReadMessage(message: Message, conversation: Conversation | undefined, maxText: number, savedFiles: string[] = []): string {
+  const where = !conversation ? message.conversationId : conversation.kind === "all" ? "@all" : formatAddress(conversation.members);
+  const lines = [`#${message.seq} @${message.from} → ${where} · ${formatUtc(message.createdAt)}`];
+  if (message.quote) lines.push(quoteLine(message.quote));
+  if (message.text) {
+    lines.push(
+      message.text.length > maxText
+        ? `${message.text.slice(0, maxText)}… (${message.text.length} chars; op=show message_id ${message.seq} for all)`
+        : message.text
+    );
+  }
+  message.files.forEach((file, i) => lines.push(`File: ${savedFiles[i] ?? file.name} (${file.name}, ${file.size} B)`));
+  return lines.join("\n");
+}
+
+/** "#n · time · @from → where: …snippet…" around the first match of `query`. */
+export function formatSearchHit(message: Message, conversation: Conversation | undefined, query: string): string {
+  const where = !conversation ? message.conversationId : conversation.kind === "all" ? "@all" : formatAddress(conversation.members);
+  const flat = message.text.replace(/\s+/g, " ").trim();
+  const at = query ? flat.toLowerCase().indexOf(query.toLowerCase()) : 0;
+  const start = Math.max(0, at - 80);
+  const snippet = `${start > 0 ? "…" : ""}${flat.slice(start, start + 200)}${start + 200 < flat.length ? "…" : ""}`;
+  const files = message.files.length > 0 ? ` [${message.files.map((f) => f.name).join(", ")}]` : "";
+  return `#${message.seq} · ${formatUtc(message.createdAt)} · @${message.from} → ${where}: ${snippet || "(no text)"}${files}`;
+}
+
+/** Joins entries newest-last within the budget, dropping the oldest first. */
+function withinBudget(entries: string[], separator: string): { text: string; dropped: number } {
+  const kept: string[] = [];
+  let size = 0;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i] ?? "";
+    if (kept.length > 0 && size + entry.length > READ_BUDGET_CHARS) break;
+    kept.unshift(entry);
+    size += entry.length + separator.length;
+  }
+  return { text: kept.join(separator), dropped: entries.length - kept.length };
 }
 
 /** How long write/send wait for recipients' harnesses to accept the message before reporting (ms). */
@@ -348,15 +406,29 @@ export default function messageBus(pi: MessageBusApi): void {
       "reuses the same conversation), plus `message` and/or `files` (local paths). " +
       "op=send: the same as write, with `files` required. Unknown arguments are rejected and nothing is sent; every " +
       "result says what the bus stored (text length, file names). " +
-      "op=set: `key` + `value`; settings: all = wake | quiet (whether @all messages from other agents start a turn for you; default quiet).",
+      "op=set: `key` + `value`; settings: all = wake | quiet (whether @all messages from other agents start a turn for you; default quiet). " +
+      "Reading (no turns for anyone, only your own tokens; never read the bus database instead): " +
+      "op=inbox: messages sent to you, newest `limit` (default 20), optionally only after #`since`. " +
+      "op=show: one message by `message_id`, in full, with its files downloaded. " +
+      "op=history: the last `limit` messages of a conversation: `to` (as you would write to it, e.g. \"@all\", \"@hilde\") " +
+      "or the conversation of `message_id`. " +
+      "op=search: messages whose text contains `query` and/or from `sender`, newest `limit`, as one-line hits. " +
+      "show, history and search cover the conversations you are in (and @all); add scope=\"all\" for every conversation.",
     parameters: z.object({
-      op: z.enum(["reply", "write", "send", "set"]).describe("reply to a message, write a message, send files, or set a setting"),
-      message_id: z.number().optional().describe("the #number of the message you answer (reply)"),
-      to: z.string().optional().describe('"@all", "@id" or "@{id1,id2}" (write/send)'),
+      op: z
+        .enum(["reply", "write", "send", "set", "inbox", "show", "history", "search"])
+        .describe("reply/write/send a message, set a setting, or read: inbox, show, history, search"),
+      message_id: z.number().optional().describe("a message's #number (reply, show, history)"),
+      to: z.string().optional().describe('"@all", "@id" or "@{id1,id2}" (write/send, history)'),
       message: z.string().optional().describe("message text (reply/write; optional caption for send)"),
       files: z.array(z.string()).optional().describe("file paths, relative to the project folder or absolute (optional for reply and write)"),
       key: z.string().optional().describe("setting name (set)"),
       value: z.string().optional().describe("setting value (set)"),
+      query: z.string().optional().describe("text to find, case-insensitive (search)"),
+      sender: z.string().optional().describe("only messages from this id (search)"),
+      since: z.number().optional().describe("only messages after this #number (inbox)"),
+      limit: z.number().optional().describe("how many messages, default 20, at most 100 (inbox, history, search)"),
+      scope: z.enum(["mine", "all"]).optional().describe('"mine" (default): your conversations and @all; "all": every conversation'),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const conn = connection;
@@ -383,6 +455,13 @@ export default function messageBus(pi: MessageBusApi): void {
       const sent = async (what: string, res: PostMessageResponse): Promise<ToolResult> =>
         result(`${what} (conversation ${res.conversation.id}, message #${res.message.seq}): ${contents(res)}; ${await deliveryStatus(conn, res)}.`);
 
+      /** Messages of a read result, newest kept when the page is too large. */
+      const listed = (res: ReadResponse, what: string): string => {
+        const byId = new Map(res.conversations.map((c) => [c.id, c]));
+        const entries = res.messages.map((m) => formatReadMessage(m, byId.get(m.conversationId), READ_TEXT_CHARS));
+        const { text, dropped } = withinBudget(entries, "\n\n");
+        return `${res.messages.length} ${what}${dropped ? ` (${dropped} older ones left out; use a smaller limit)` : ""}:\n\n${text}\n`;
+      };
       switch (params.op) {
         case "reply": {
           if (params.message_id === undefined || (!params.message && !params.files?.length)) {
@@ -407,6 +486,42 @@ export default function messageBus(pi: MessageBusApi): void {
           if (!params.key || params.value === undefined) throw new Error("set needs `key` and `value`.");
           const res = await conn.set(params.key, params.value);
           return result(`Settings now: ${JSON.stringify(res.participant.settings)}.`);
+        }
+        case "inbox": {
+          const res = await conn.inbox(params.since ?? 0, params.limit ?? 20);
+          if (res.messages.length === 0) return result(`No messages for you${params.since ? ` after #${params.since}` : ""}.`);
+          return result(listed(res, "messages sent to you"));
+        }
+        case "show": {
+          if (params.message_id === undefined) throw new Error("show needs `message_id`.");
+          const { message, conversation } = await conn.message(params.message_id);
+          if (params.scope !== "all" && conversation.kind === "group" && !conversation.members.includes(conn.id ?? "")) {
+            throw new Error(`#${message.seq} is in a conversation you are not in (${formatAddress(conversation.members)}); add scope "all" to read it.`);
+          }
+          const saved: string[] = [];
+          if (message.files.length > 0) {
+            const dir = path.join(os.homedir(), ".agent-bus", "received", conn.id ?? "");
+            for (const file of message.files) saved.push(await conn.downloadFile(file, dir));
+          }
+          return result(formatReadMessage(message, conversation, Number.MAX_SAFE_INTEGER, saved));
+        }
+        case "history": {
+          let target: { to: string } | { conversationId: string };
+          if (params.to) target = { to: params.to };
+          else if (params.message_id !== undefined) target = { conversationId: (await conn.message(params.message_id)).message.conversationId };
+          else throw new Error("history needs `to` (an address) or `message_id` (that message's conversation).");
+          const res = await conn.history(target, params.limit ?? 20, params.scope === "all");
+          if (res.messages.length === 0) return result("No messages in that conversation yet.");
+          return result(listed(res, "messages, oldest first"));
+        }
+        case "search": {
+          if (!params.query?.trim() && !params.sender) throw new Error("search needs `query` and/or `sender`.");
+          const res = await conn.search(params.query ?? "", params.sender, params.limit ?? 20, params.scope === "all");
+          if (res.messages.length === 0) return result("No matching messages.");
+          const byId = new Map(res.conversations.map((c) => [c.id, c]));
+          const hits = res.messages.map((m) => formatSearchHit(m, byId.get(m.conversationId), params.query ?? ""));
+          const { text, dropped } = withinBudget(hits, "\n");
+          return result(`${res.messages.length} matching messages, oldest first${dropped ? ` (${dropped} older ones left out)` : ""}:\n${text}\n`);
         }
       }
     },

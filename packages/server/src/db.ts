@@ -739,6 +739,52 @@ export class BusDatabase {
     return this.withReceipts(rows.reverse());
   }
 
+  /** Ascending; the newest `limit` messages sent to `agentId` (it has a receipt for them) with `seq > sinceSeq`. */
+  inboxFor(agentId: string, sinceSeq: number, limit: number): Message[] {
+    const rows = this.db
+      .query<MessageRow, [string, number, number]>(
+        `SELECT m.* FROM messages m JOIN receipts r ON r.seq = m.seq AND r.recipient = ?1
+         WHERE m.seq > ?2 ORDER BY m.seq DESC LIMIT ?3`
+      )
+      .all(agentId, sinceSeq, limit);
+    return this.withReceipts(rows.reverse());
+  }
+
+  /**
+   * Ascending; the newest `limit` messages whose text contains `query` (case-insensitive; empty matches all),
+   * optionally only from `sender`, and only in `conversationIds` unless that is null (everything).
+   */
+  searchMessages(query: string, sender: string | null, conversationIds: readonly string[] | null, limit: number): Message[] {
+    const pattern = `%${query.toLowerCase().replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+    const rows = this.db
+      .query<MessageRow, [string, string | null, string | null, number]>(
+        `SELECT * FROM messages
+         WHERE lower(text) LIKE ?1 ESCAPE '\\'
+           AND (?2 IS NULL OR from_id = ?2)
+           AND (?3 IS NULL OR conversation_id IN (SELECT value FROM json_each(?3)))
+         ORDER BY seq DESC LIMIT ?4`
+      )
+      .all(pattern, sender, conversationIds === null ? null : JSON.stringify(conversationIds), limit);
+    return this.withReceipts(rows.reverse());
+  }
+
+  /** Ids of `@all` and of every group `participantId` is a member of. */
+  conversationIdsOf(participantId: string): string[] {
+    const ids = this.db
+      .query<{ conversation_id: string }, [string]>("SELECT conversation_id FROM conversation_members WHERE participant_id = ?1")
+      .all(participantId)
+      .map((r) => r.conversation_id);
+    return [ALL_CONVERSATION_ID, ...ids];
+  }
+
+  /** The existing group for an address set (writer included), without creating one. */
+  findGroup(ids: readonly string[]): Conversation | null {
+    const row = this.db
+      .query<{ id: string }, [string]>("SELECT id FROM conversations WHERE kind = 'group' AND thread_key = ?1")
+      .get(this.threadKey(ids));
+    return row ? this.getConversation(row.id) : null;
+  }
+
   /**
    * Messages for `agentId` not written by it, ascending, newest `limit`: those with an undelivered receipt for it,
    * plus (for messages written before receipts existed) those after `afterSeq` in `all` or in groups whose
