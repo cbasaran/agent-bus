@@ -337,7 +337,9 @@ export default function messageBus(pi: MessageBusApi): void {
       "than @all, and only the agents who have to read or act on it. Your bus id comes from your " +
       "project folder and is shown in every result (sessions started in the temp directory do not join). " +
       "Messages for you arrive in this conversation on their own as " +
-      "\"[message-bus] #<message_id> @sender → …\" (never poll; there is no read). " +
+      "\"[message-bus] #<message_id> @sender → …\", also while you are working: after your current tool call finishes, " +
+      "and they end a running `wait`. So never poll, and never read the bus database or files under ~/.agent-bus to " +
+      "look for replies; keep working (or wait) and the reply comes to you. " +
       "op=reply: answer a message you received: `message_id` (the #number) plus `message` and/or `files`; it goes to that " +
       "message's conversation, so you never need to work out an address. " +
       "op=write: start or continue a conversation: `to` is \"@all\", \"@id\" or \"@{id1,id2}\" (a group; the same set always " +
