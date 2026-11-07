@@ -1485,11 +1485,24 @@ function autosize(): void {
   dom.input.style.height = `${Math.min(dom.input.scrollHeight, 240)}px`;
 }
 
+/** Object URLs of the staged image previews currently shown; revoked on every re-render. */
+let stagedPreviewUrls: string[] = [];
+
 function renderStaged(): void {
+  for (const url of stagedPreviewUrls) URL.revokeObjectURL(url);
+  stagedPreviewUrls = [];
   dom.stagedFiles.hidden = state.staged.length === 0;
   dom.stagedFiles.replaceChildren(
     ...state.staged.map((file, index) => {
       const li = h("li", "staged-file");
+      if (file.type.startsWith("image/")) {
+        const url = URL.createObjectURL(file);
+        stagedPreviewUrls.push(url);
+        const img = h("img", "staged-preview");
+        img.src = url;
+        img.alt = file.name;
+        li.append(img);
+      }
       li.append(h("span", "file-name", file.name), h("span", "file-size", formatBytes(file.size)));
       const remove = h("button", "staged-remove", "×");
       remove.type = "button";
@@ -1512,6 +1525,22 @@ function stageFiles(files: Iterable<File>): void {
   updateComposerState();
   dom.input.focus();
 }
+
+/** Browsers name every pasted image "image.png"; give each a distinct, dated name instead. */
+function pastedName(file: File, index: number): File {
+  if (file.name && file.name !== "image.png" && file.name !== "image.jpeg") return file;
+  const ext = file.type.split("/")[1]?.replace("jpeg", "jpg") || "png";
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[-:]/g, "").replace("T", "-");
+  return new File([file], `pasted-${stamp}${index > 0 ? `-${index + 1}` : ""}.${ext}`, { type: file.type });
+}
+
+// Ctrl/⌘+V of an image (a screenshot) or of copied files attaches them; text pastes as usual.
+dom.input.addEventListener("paste", (event) => {
+  const files = Array.from(event.clipboardData?.files ?? []);
+  if (files.length === 0) return;
+  event.preventDefault();
+  stageFiles(files.map(pastedName));
+});
 
 async function uploadFile(file: File): Promise<FileRef> {
   const params = new URLSearchParams({ from: state.me, name: file.name });
@@ -1604,30 +1633,30 @@ dom.fileInput.addEventListener("change", () => {
   dom.fileInput.value = "";
 });
 
-// Drag and drop anywhere over the main pane.
+// Drag and drop anywhere on the page.
 let dragDepth = 0;
 
 function hasFiles(event: DragEvent): boolean {
   return event.dataTransfer?.types.includes("Files") ?? false;
 }
 
-dom.main.addEventListener("dragenter", (event) => {
+document.addEventListener("dragenter", (event) => {
   if (!hasFiles(event)) return;
   event.preventDefault();
   dragDepth++;
   dom.dropOverlay.hidden = false;
 });
-dom.main.addEventListener("dragover", (event) => {
+document.addEventListener("dragover", (event) => {
   if (!hasFiles(event)) return;
   event.preventDefault();
   if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
 });
-dom.main.addEventListener("dragleave", (event) => {
+document.addEventListener("dragleave", (event) => {
   if (!hasFiles(event)) return;
   dragDepth = Math.max(0, dragDepth - 1);
   if (dragDepth === 0) dom.dropOverlay.hidden = true;
 });
-dom.main.addEventListener("drop", (event) => {
+document.addEventListener("drop", (event) => {
   if (!hasFiles(event)) return;
   event.preventDefault();
   dragDepth = 0;

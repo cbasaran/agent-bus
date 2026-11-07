@@ -1173,6 +1173,19 @@ ul.md-list ul.md-list { list-style: circle; }
   font-size: 13px;
 }
 
+.staged-file:has(.staged-preview) {
+  border-radius: 8px;
+  padding-left: 4px;
+}
+
+.staged-preview {
+  flex: none;
+  width: 48px;
+  height: 48px;
+  object-fit: cover;
+  border-radius: 6px;
+}
+
 .staged-remove {
   border: 0;
   background: transparent;
