@@ -3,6 +3,7 @@
 // write/send/set calls. Harness bindings decide how a delivery reaches their session.
 import * as path from "node:path";
 import type {
+  ActivityEvent,
   AgentClientFrame,
   AgentStatus,
   AgentServerFrame,
@@ -28,6 +29,8 @@ export interface BusConnectionOptions {
   onJoined?: (id: string) => void;
   /** A recipient's harness accepted a message this agent wrote. */
   onReceipt?: (receipt: ReceiptFrame) => void;
+  /** Someone started (true) or stopped (false) watching this agent's live output on the website. */
+  onWatch?: (on: boolean) => void;
   onLog?: (line: string) => void;
 }
 
@@ -129,6 +132,9 @@ export class BusConnection {
       case "receipt":
         this.options.onReceipt?.(frame);
         return;
+      case "watch":
+        this.options.onWatch?.(frame.on);
+        return;
       case "error":
         this.log(`server: ${frame.error}`);
         return;
@@ -152,6 +158,11 @@ export class BusConnection {
   reportStatus(status: AgentStatus): void {
     this.status = status;
     this.sendFrame({ type: "status", status });
+  }
+
+  /** Live output for watchers; dropped when not connected (a later watch gets a fresh replay). */
+  sendActivity(events: ActivityEvent[], replay: boolean): void {
+    this.sendFrame({ type: "activity", events, ...(replay ? { replay: true } : {}) });
   }
 
   private sendFrame(frame: AgentClientFrame): void {

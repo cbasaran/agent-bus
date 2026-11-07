@@ -16,6 +16,7 @@ import {
   type PostMessageResponse,
   type ReceiptFrame,
 } from "../../protocol/src/types";
+import { ActivityLog, contentText } from "./activity";
 import { BusConnection, type Delivery } from "./connection";
 
 interface ZodSchemaLike {
@@ -74,9 +75,17 @@ export interface MessageBusApi {
   on(event: "agent_end", handler: (event: { willContinue?: boolean }) => void): void;
   on(
     event: "tool_execution_start",
-    handler: (event: { toolCallId: string; toolName: string; intent?: string }) => void
+    handler: (event: { toolCallId: string; toolName: string; args?: unknown; intent?: string }) => void
   ): void;
-  on(event: "tool_execution_end", handler: (event: { toolCallId: string }) => void): void;
+  on(event: "tool_execution_update", handler: (event: { toolCallId: string; partialResult?: { content?: unknown } }) => void): void;
+  on(
+    event: "tool_execution_end",
+    handler: (event: { toolCallId: string; result?: { content?: unknown }; isError?: boolean }) => void
+  ): void;
+  on(
+    event: "message_start" | "message_update" | "message_end",
+    handler: (event: { message?: { role?: string; content?: unknown; timestamp?: number } }) => void
+  ): void;
   registerTool(definition: {
     name: string;
     label: string;
@@ -212,6 +221,7 @@ export default function messageBus(pi: MessageBusApi): void {
       path: projectPath,
       onDeliver: deliver,
       onReceipt,
+      onWatch: (on) => activityLog.setWatching(on),
       onJoined: (id) => {
         if (announced) return;
         announced = true;
@@ -279,15 +289,34 @@ export default function messageBus(pi: MessageBusApi): void {
     runningTools.set(event.toolCallId, { name: event.toolName, since: Date.now() });
     if (typeof event.intent === "string" && event.intent.trim()) activity = event.intent.trim();
     statusChanged();
+    if (connection) activityLog.toolStart(event.toolCallId, event.toolName, event.args, event.intent);
   });
   pi.on("tool_execution_end", (event) => {
     runningTools.delete(event.toolCallId);
     statusChanged();
+    if (connection) activityLog.toolOutput(event.toolCallId, contentText(event.result?.content), event.isError ? "error" : "done");
   });
+
+  // ---- Live output for whoever watches this agent's page on the website (sent only while watched). ----
+  const activityLog = new ActivityLog((events, replay) => connection?.sendActivity(events, replay));
+  pi.on("tool_execution_update", (event) => {
+    if (connection) activityLog.toolOutput(event.toolCallId, contentText(event.partialResult?.content), "running");
+  });
+  const onMessage = (done: boolean) => (event: { message?: { role?: string; content?: unknown; timestamp?: number } }) => {
+    const message = event.message;
+    if (!connection || !message) return;
+    const at = typeof message.timestamp === "number" ? message.timestamp : Date.now();
+    if (message.role === "assistant") activityLog.assistant(at, contentText(message.content), done);
+    else if (message.role === "user" && !done) activityLog.user(at, contentText(message.content));
+  };
+  pi.on("message_start", onMessage(false));
+  pi.on("message_update", onMessage(false));
+  pi.on("message_end", onMessage(true));
 
   pi.on("session_shutdown", () => {
     clearTimeout(statusTimer);
     statusTimer = undefined;
+    activityLog.dispose();
     connection?.close();
     connection = undefined;
     sessionCtx = undefined;

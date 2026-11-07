@@ -383,3 +383,51 @@ test("the agent reports its status to the bus without a model turn: busy with it
   // Status never reaches the model: the only injection is the bus message.
   expect(alpha.injected.map((i) => i.content.includes("status check"))).toEqual([true]);
 });
+
+test("live output streams only while someone watches the agent's page: replay first, then changes", async () => {
+  const alpha = await startSession("alpha");
+  // Before anyone watches: recorded, not sent.
+  alpha.emit("message_start", { message: { role: "user", content: [{ type: "text", text: "check the logs" }], timestamp: 1 } });
+  alpha.emit("tool_execution_start", { toolCallId: "t1", toolName: "bash", args: { command: "tail -n 5 app.log" }, intent: "Reading the log" });
+  alpha.emit("tool_execution_end", { toolCallId: "t1", result: { content: [{ type: "text", text: "all good" }] } });
+
+  const watcher = new WebSocket(`${bus.url.replace(/^http/, "ws")}/ws/viewer`);
+  sockets.push(watcher);
+  const frames: Array<Extract<ViewerServerFrame, { type: "activity" }>> = [];
+  let waiter: { until: () => boolean; resolve: () => void } | undefined;
+  watcher.addEventListener("message", (e) => {
+    const frame = JSON.parse(String(e.data)) as ViewerServerFrame;
+    if (frame.type === "activity") frames.push(frame);
+    if (waiter?.until()) waiter.resolve();
+  });
+  const until = (pred: () => boolean): Promise<void> => {
+    if (pred()) return Promise.resolve();
+    const { promise, resolve } = Promise.withResolvers<void>();
+    waiter = { until: pred, resolve };
+    return promise;
+  };
+  await new Promise((r) => watcher.addEventListener("open", r, { once: true }));
+  watcher.send(JSON.stringify({ type: "watch", agentId: "alpha" }));
+
+  await until(() => frames.some((f) => f.replay));
+  const replay = frames.find((f) => f.replay)!;
+  expect(replay.agentId).toBe("alpha");
+  expect(replay.events.map((e) => e.kind)).toEqual(["user", "tool"]);
+  expect(replay.events[1]).toMatchObject({ name: "bash", input: "tail -n 5 app.log", output: "all good", state: "done", intent: "Reading the log" });
+
+  // Live: streaming text is an upsert of one entry.
+  alpha.emit("message_update", { message: { role: "assistant", content: [{ type: "text", text: "The log" }], timestamp: 2 } });
+  alpha.emit("message_end", { message: { role: "assistant", content: [{ type: "text", text: "The log is clean." }], timestamp: 2 } });
+  await until(() => frames.some((f) => f.events.some((e) => e.kind === "assistant" && e.done)));
+  const assistant = frames.flatMap((f) => f.events).filter((e) => e.kind === "assistant").at(-1);
+  expect(assistant).toMatchObject({ id: "a:2", text: "The log is clean.", done: true });
+
+  // Watcher leaves: the agent stops sending (no frame reaches a new watcher of someone else either).
+  watcher.send(JSON.stringify({ type: "watch", agentId: null }));
+  const count = frames.length;
+  alpha.emit("message_start", { message: { role: "user", content: [{ type: "text", text: "after" }], timestamp: 3 } });
+  await Bun.sleep(600); // longer than the extension's 300 ms flush window
+  expect(frames.length).toBe(count);
+  // Nothing of this reached the model.
+  expect(alpha.injected).toEqual([]);
+});

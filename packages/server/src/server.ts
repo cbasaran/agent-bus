@@ -15,6 +15,7 @@ import {
   type Conversation,
   type AgentSettings,
   type AgentStatus,
+  type ActivityEvent,
   type FileRef,
   type HealthResponse,
   type Message,
@@ -86,7 +87,11 @@ type SocketData =
       statusAt?: number;
       reportingSince?: number;
     }
-  | { kind: "viewer" };
+  | {
+      kind: "viewer";
+      /** Agent whose live output this viewer watches. */
+      watching?: string;
+    };
 
 type Socket = Bun.ServerWebSocket<SocketData>;
 
@@ -349,6 +354,7 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
     sockets.add(ws);
 
     sendFrame(ws, { type: "joined", id: participant.id, participants: listParticipants() });
+    if (watchers.has(participant.id)) sendFrame(ws, { type: "watch", on: true });
     if (!isNew) {
       const conversations = new Map<string, Conversation>();
       for (const message of db.backlogFor(participant.id, participant.deliveredSeq, BACKLOG_LIMIT)) {
@@ -395,15 +401,71 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
         return;
       }
     }
+    if (isJsonObject(frame) && frame.type === "activity" && Array.isArray(frame.events)) {
+      // Relayed as is (never stored) to the viewers watching this agent; the website renders it as text only.
+      const out: ViewerServerFrame = {
+        type: "activity",
+        agentId: data.id,
+        events: frame.events as ActivityEvent[],
+        ...(frame.replay === true ? { replay: true } : {}),
+      };
+      const text = JSON.stringify(out);
+      for (const viewer of watchers.get(data.id) ?? []) viewer.send(text);
+      return;
+    }
     sendFrame(ws, {
       type: "error",
-      error: 'Expected {"type":"ack"|"seen","seq":<integer>} or {"type":"status","status":{state,since,…}}',
+      error: 'Expected {"type":"ack"|"seen","seq":<integer>}, {"type":"status",…} or {"type":"activity",…}',
     });
+  };
+
+  /** Viewers by the agent they watch; the agent streams while it has at least one. */
+  const watchers = new Map<string, Set<Socket>>();
+
+  const sendToAgent = (agentId: string, frame: AgentServerFrame): void => {
+    for (const ws of agentSockets.get(agentId) ?? []) sendFrame(ws, frame);
+  };
+
+  const setWatching = (viewer: Socket, agentId: string | undefined): void => {
+    const data = viewer.data;
+    if (data.kind !== "viewer" || data.watching === agentId) return;
+    const previous = data.watching;
+    if (previous !== undefined) {
+      const set = watchers.get(previous);
+      set?.delete(viewer);
+      if (set && set.size === 0) {
+        watchers.delete(previous);
+        sendToAgent(previous, { type: "watch", on: false });
+      }
+    }
+    data.watching = agentId;
+    if (agentId === undefined) return;
+    let set = watchers.get(agentId);
+    if (!set) {
+      set = new Set();
+      watchers.set(agentId, set);
+    }
+    set.add(viewer);
+    // Sent for every new watcher, not just the first: each one needs the agent's replay of recent entries.
+    sendToAgent(agentId, { type: "watch", on: true });
+  };
+
+  const handleViewerMessage = (ws: Socket, raw: string | Buffer): void => {
+    let frame: unknown;
+    try {
+      frame = JSON.parse(typeof raw === "string" ? raw : raw.toString("utf8"));
+    } catch {
+      return;
+    }
+    if (!isJsonObject(frame) || frame.type !== "watch") return;
+    const agentId = typeof frame.agentId === "string" && frame.agentId !== "" ? frame.agentId : undefined;
+    setWatching(ws, agentId);
   };
 
   const handleClose = (ws: Socket): void => {
     const data = ws.data;
     if (data.kind === "viewer") {
+      setWatching(ws, undefined);
       viewers.delete(ws);
       return;
     }
@@ -773,7 +835,8 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
         handleAgentOpen(ws);
       },
       message(ws, raw) {
-        handleAgentMessage(ws, raw);
+        if (ws.data.kind === "viewer") handleViewerMessage(ws, raw);
+        else handleAgentMessage(ws, raw);
       },
       close(ws) {
         handleClose(ws);

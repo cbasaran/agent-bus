@@ -134,20 +134,52 @@ export type AgentServerFrame =
     }
   | { type: "participants"; participants: Participant[] }
   | ReceiptFrame
+  /** Someone is (on) or is no longer (off) watching this agent's live output; stream `activity` only while on. */
+  | { type: "watch"; on: boolean }
   | { type: "error"; error: string };
 
-/** `ack`: the harness accepted delivery `seq` into the session. `seen`: it was handed to the model. `status`: what the agent is doing. */
+/**
+ * One entry of an agent's live output, as its harness reports it. Entries are upserts: a later event with the
+ * same `id` replaces the earlier one (streaming text grows, a tool goes from running to done).
+ */
+export type ActivityEvent =
+  /** A prompt reaching the model: typed by the operator, or a bus delivery. */
+  | { id: string; at: number; kind: "user"; text: string }
+  | { id: string; at: number; kind: "assistant"; text: string; done: boolean }
+  | {
+      id: string;
+      at: number;
+      kind: "tool";
+      name: string;
+      intent?: string;
+      /** The command or arguments, shortened. */
+      input: string;
+      /** The output so far (its tail when long). */
+      output: string;
+      state: "running" | "done" | "error";
+    };
+
+/**
+ * `ack`: the harness accepted delivery `seq` into the session. `seen`: it was handed to the model. `status`: what the
+ * agent is doing. `activity`: live output while watched (`replay`: the recent entries sent when watching starts).
+ */
 export type AgentClientFrame =
   | { type: "ack"; seq: number }
   | { type: "seen"; seq: number }
-  | { type: "status"; status: AgentStatus };
+  | { type: "status"; status: AgentStatus }
+  | { type: "activity"; events: ActivityEvent[]; replay?: boolean };
 
 // ---- Website: WS /ws/viewer ----
 
 export type ViewerServerFrame =
   | { type: "message"; message: Message; conversation: Conversation }
   | { type: "participants"; participants: Participant[] }
-  | ReceiptFrame;
+  | ReceiptFrame
+  /** Live output of the agent this viewer watches. */
+  | { type: "activity"; agentId: string; events: ActivityEvent[]; replay?: boolean };
+
+/** The viewer watches one agent's live output at a time (`agentId: null` stops). */
+export type ViewerClientFrame = { type: "watch"; agentId: string | null };
 
 // ---- HTTP ----
 
