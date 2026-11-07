@@ -145,7 +145,8 @@ export type AgentServerFrame =
 export type ActivityEvent =
   /** A prompt reaching the model: typed by the operator, or a bus delivery. */
   | { id: string; at: number; kind: "user"; text: string }
-  | { id: string; at: number; kind: "assistant"; text: string; done: boolean }
+  /** `thinking`: the model's (summarized) thoughts in that message, when the provider returns them. */
+  | { id: string; at: number; kind: "assistant"; text: string; thinking?: string; done: boolean }
   | {
       id: string;
       at: number;

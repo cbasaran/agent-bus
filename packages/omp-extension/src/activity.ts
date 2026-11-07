@@ -13,6 +13,7 @@ const MAX_OUTPUT = 4_000;
 interface ContentBlock {
   type?: unknown;
   text?: unknown;
+  thinking?: unknown;
 }
 
 /** Text blocks of an omp message content array, joined (thinking and tool-call blocks are left out). */
@@ -23,6 +24,15 @@ export function contentText(content: unknown): string {
     .filter((b: ContentBlock) => b && b.type === "text" && typeof b.text === "string")
     .map((b: ContentBlock) => b.text as string)
     .join("\n");
+}
+
+/** Thinking blocks (`{ type: "thinking", thinking }`) of an assistant message, joined; "" when there are none. */
+export function contentThinking(content: unknown): string {
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter((b: ContentBlock) => b && b.type === "thinking" && typeof b.thinking === "string")
+    .map((b: ContentBlock) => b.thinking as string)
+    .join("\n\n");
 }
 
 function head(text: string, max: number): string {
@@ -75,10 +85,17 @@ export class ActivityLog {
     this.upsert({ id: `u:${at}`, at, kind: "user", text: head(text, MAX_TEXT) });
   }
 
-  assistant(at: number, text: string, done: boolean): void {
+  assistant(at: number, text: string, thinking: string, done: boolean): void {
     const id = `a:${at}`;
-    if (!text.trim() && !this.entries.has(id)) return;
-    this.upsert({ id, at, kind: "assistant", text: head(text, MAX_TEXT), done });
+    if (!text.trim() && !thinking.trim() && !this.entries.has(id)) return;
+    this.upsert({
+      id,
+      at,
+      kind: "assistant",
+      text: head(text, MAX_TEXT),
+      ...(thinking.trim() ? { thinking: head(thinking, MAX_TEXT) } : {}),
+      done,
+    });
   }
 
   toolStart(id: string, name: string, args: unknown, intent: unknown): void {

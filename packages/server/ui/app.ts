@@ -415,9 +415,18 @@ function renderActivityEntry(event: ActivityEvent): HTMLElement {
     return h("div", "act act-user", text);
   }
   if (event.kind === "assistant") {
-    const el = h("div", `act act-assistant msg-text${event.done ? "" : " act-streaming"}`);
-    el.append(...renderMarkdown(event.text, mentionNodes));
-    return el;
+    const wrap = h("div", `act act-assistant${event.done ? "" : " act-streaming"}`);
+    if (event.thinking) {
+      const thought = h("div", "act-thinking msg-text");
+      thought.append(...renderMarkdown(event.thinking, mentionNodes));
+      wrap.append(thought);
+    }
+    if (event.text) {
+      const text = h("div", "msg-text");
+      text.append(...renderMarkdown(event.text, mentionNodes));
+      wrap.append(text);
+    }
+    return wrap;
   }
   const el = h("div", `act act-tool act-${event.state}`);
   const head = h("div", "act-tool-head");

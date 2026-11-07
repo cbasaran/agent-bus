@@ -415,12 +415,20 @@ test("live output streams only while someone watches the agent's page: replay fi
   expect(replay.events.map((e) => e.kind)).toEqual(["user", "tool"]);
   expect(replay.events[1]).toMatchObject({ name: "bash", input: "tail -n 5 app.log", output: "all good", state: "done", intent: "Reading the log" });
 
-  // Live: streaming text is an upsert of one entry.
-  alpha.emit("message_update", { message: { role: "assistant", content: [{ type: "text", text: "The log" }], timestamp: 2 } });
-  alpha.emit("message_end", { message: { role: "assistant", content: [{ type: "text", text: "The log is clean." }], timestamp: 2 } });
+  // Live: streaming text is an upsert of one entry, with the model's thoughts (thinking blocks) alongside.
+  const thought = { type: "thinking", thinking: "Checking the last lines for errors.", thinkingSignature: "x" };
+  alpha.emit("message_update", { message: { role: "assistant", content: [thought], timestamp: 2 } });
+  alpha.emit("message_end", {
+    message: { role: "assistant", content: [thought, { type: "text", text: "The log is clean." }], timestamp: 2 },
+  });
   await until(() => frames.some((f) => f.events.some((e) => e.kind === "assistant" && e.done)));
   const assistant = frames.flatMap((f) => f.events).filter((e) => e.kind === "assistant").at(-1);
-  expect(assistant).toMatchObject({ id: "a:2", text: "The log is clean.", done: true });
+  expect(assistant).toMatchObject({
+    id: "a:2",
+    thinking: "Checking the last lines for errors.",
+    text: "The log is clean.",
+    done: true,
+  });
 
   // Watcher leaves: the agent stops sending (no frame reaches a new watcher of someone else either).
   watcher.send(JSON.stringify({ type: "watch", agentId: null }));

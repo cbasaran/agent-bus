@@ -423,9 +423,17 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
-.act-streaming::after {
+.act-streaming > :last-child::after {
   content: " ▍";
   color: var(--muted);
+}
+
+.act-thinking {
+  margin-bottom: 4px;
+  padding-left: 8px;
+  border-left: 2px solid var(--border);
+  color: var(--muted);
+  font-style: italic;
 }
 
 .act-tool {

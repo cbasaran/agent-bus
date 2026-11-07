@@ -16,7 +16,7 @@ import {
   type PostMessageResponse,
   type ReceiptFrame,
 } from "../../protocol/src/types";
-import { ActivityLog, contentText } from "./activity";
+import { ActivityLog, contentText, contentThinking } from "./activity";
 import { BusConnection, type Delivery } from "./connection";
 
 interface ZodSchemaLike {
@@ -306,7 +306,9 @@ export default function messageBus(pi: MessageBusApi): void {
     const message = event.message;
     if (!connection || !message) return;
     const at = typeof message.timestamp === "number" ? message.timestamp : Date.now();
-    if (message.role === "assistant") activityLog.assistant(at, contentText(message.content), done);
+    if (message.role === "assistant") {
+      activityLog.assistant(at, contentText(message.content), contentThinking(message.content), done);
+    }
     else if (message.role === "user" && !done) activityLog.user(at, contentText(message.content));
   };
   pi.on("message_start", onMessage(false));
