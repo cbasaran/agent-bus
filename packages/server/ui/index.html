@@ -65,6 +65,7 @@
         <ol id="message-list" class="message-list"></ol>
         <div id="message-empty" class="message-empty" hidden></div>
       </div>
+      <button id="composer-open" type="button" class="composer-open">✎ Write a message</button>
       <form id="composer" class="composer" autocomplete="off">
         <div id="composer-error" class="composer-error" role="alert" hidden></div>
         <div id="reply-bar" class="reply-bar" hidden>
@@ -80,6 +81,7 @@
             <textarea id="composer-input" rows="1" placeholder="Message…  (Enter to send, Shift+Enter for a new line, @ to mention)"></textarea>
           </div>
           <button id="send-btn" type="submit" class="send-btn">Send</button>
+          <button id="composer-hide" type="button" class="icon-btn composer-hide" title="Hide the message box">▴</button>
         </div>
       </form>
       <div id="drop-overlay" class="drop-overlay" hidden>Drop files to attach</div>

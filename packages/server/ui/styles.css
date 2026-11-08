@@ -70,6 +70,8 @@ button:disabled {
 
 .app {
   height: 100vh;
+  /* Phones: the visible height, which shrinks when the on-screen keyboard opens. */
+  height: 100dvh;
   display: grid;
   grid-template-columns: 280px minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
@@ -1449,6 +1451,11 @@ ul.md-list ul.md-list { list-style: circle; }
   }
 }
 
+.composer-open,
+.composer-hide {
+  display: none;
+}
+
 @media (max-width: 640px) {
   .app,
   .app.with-doc {
@@ -1469,5 +1476,49 @@ ul.md-list ul.md-list { list-style: circle; }
 
   .sidebar {
     max-height: 32vh;
+  }
+
+  /* The message box sits above the conversation, where the iOS keyboard cannot cover it, and folds away. */
+  .main > .composer,
+  .main > .composer-open {
+    order: -1;
+  }
+
+  .main > .composer {
+    border-top: 0;
+    border-bottom: 1px solid var(--border);
+    padding: 8px 10px;
+  }
+
+  .composer-open {
+    display: block;
+    width: 100%;
+    padding: 10px 14px;
+    border: 0;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+    color: var(--accent);
+    font-size: 15px;
+    text-align: left;
+  }
+
+  .composer-hide {
+    display: grid;
+  }
+
+  .main.composer-collapsed > .composer,
+  .main:not(.composer-collapsed) > .composer-open {
+    display: none;
+  }
+
+  /* With the box on top, @ suggestions open below the input. */
+  .mention-menu {
+    top: calc(100% + 6px);
+    bottom: auto;
+  }
+
+  /* iOS zooms into inputs with text under 16px. */
+  #composer-input {
+    font-size: 16px;
   }
 }

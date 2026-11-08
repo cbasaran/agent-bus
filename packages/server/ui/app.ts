@@ -82,6 +82,8 @@ const dom = {
   composerError: el<HTMLDivElement>("composer-error"),
   stagedFiles: el<HTMLUListElement>("staged-files"),
   attachBtn: el<HTMLButtonElement>("attach-btn"),
+  composerOpen: el<HTMLButtonElement>("composer-open"),
+  composerHide: el<HTMLButtonElement>("composer-hide"),
   fileInput: el<HTMLInputElement>("file-input"),
   mentionMenu: el<HTMLUListElement>("mention-menu"),
   input: el<HTMLTextAreaElement>("composer-input"),
@@ -1303,11 +1305,30 @@ function setReplyTo(message: Message | undefined): void {
   if (message) {
     const text = message.text.replace(/\s+/g, " ").trim();
     dom.replyBarText.textContent = `Replying to @${message.from}: ${text.length > 120 ? `${text.slice(0, 119)}…` : text || "(file)"}`;
+    setComposerCollapsed(false);
     dom.input.focus();
   }
 }
 
 dom.replyCancel.addEventListener("click", () => setReplyTo(undefined));
+
+// Phones (≤640 px): the message box sits on top and folds into a "Write a message" bar (remembered per browser).
+const COMPOSER_COLLAPSED_KEY = "agent-bus.composerCollapsed";
+
+function setComposerCollapsed(collapsed: boolean): void {
+  dom.main.classList.toggle("composer-collapsed", collapsed);
+  localStorage.setItem(COMPOSER_COLLAPSED_KEY, collapsed ? "1" : "0");
+}
+
+dom.main.classList.toggle("composer-collapsed", localStorage.getItem(COMPOSER_COLLAPSED_KEY) === "1");
+dom.composerHide.addEventListener("click", () => {
+  dom.input.blur();
+  setComposerCollapsed(true);
+});
+dom.composerOpen.addEventListener("click", () => {
+  setComposerCollapsed(false);
+  dom.input.focus();
+});
 
 const MENTION_RE = /(^|[\s({,])(@(?:\{[^}\n]*\}|[a-z0-9][a-z0-9_-]*(?:@[a-z0-9][a-z0-9_-]*)?))/gi;
 
@@ -1477,8 +1498,13 @@ function updateComposerState(): void {
   const view = state.view;
   const conv = view.kind === "conversation" ? state.conversations.get(view.id) : undefined;
   const target = view.kind === "draft" ? mentionList(view.to) : conv ? conversationTitle(conv) : "";
-  dom.input.placeholder = `Message ${target}…  (Enter to send, Shift+Enter for a new line, @ to mention)`;
+  dom.input.placeholder = PHONE.matches
+    ? `Message ${target}…`
+    : `Message ${target}…  (Enter to send, Shift+Enter for a new line, @ to mention)`;
 }
+
+/** The phone layout of styles.css (message box on top, folding). */
+const PHONE = window.matchMedia("(max-width: 640px)");
 
 function autosize(): void {
   dom.input.style.height = "auto";
