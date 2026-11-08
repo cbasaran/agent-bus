@@ -688,7 +688,7 @@ function askProfile(): void {
       button.addEventListener("click", () => {
         dom.profileDialog.close();
         setMe(id);
-        dom.input.focus();
+        if (!PHONE.matches) dom.input.focus();
       });
       return button;
     })
@@ -1632,6 +1632,42 @@ dom.composer.addEventListener("submit", (event) => {
   void send();
 });
 
+// ---- Phones: the iOS keyboard covers the page instead of shrinking it ----
+
+// Size the page to the area above the keyboard (CSS var --vvh), so the newest messages end just above it.
+const viewport = window.visualViewport;
+function fitViewport(): void {
+  if (!viewport || !PHONE.matches) return;
+  const stick = nearBottom();
+  document.documentElement.style.setProperty("--vvh", `${Math.round(viewport.height)}px`);
+  // iOS scrolls the whole page to show the focused input; the page itself never needs scrolling.
+  window.scrollTo(0, 0);
+  if (stick) scrollToBottom();
+}
+viewport?.addEventListener("resize", fitViewport);
+viewport?.addEventListener("scroll", fitViewport);
+
+// While typing, the sidebar and conversation header step aside (CSS .typing) so the messages get the room.
+let typingTimer: Timer | undefined;
+dom.input.addEventListener("focus", () => {
+  clearTimeout(typingTimer);
+  if (!PHONE.matches) return;
+  const stick = nearBottom();
+  dom.app.classList.add("typing");
+  if (stick) scrollToBottom();
+});
+dom.input.addEventListener("blur", () => {
+  // Later, so a tap inside the composer (attach, remove a file) does not make the layout jump under the finger.
+  typingTimer = setTimeout(() => {
+    if (!dom.composer.contains(document.activeElement)) dom.app.classList.remove("typing");
+  }, 300);
+});
+
+// Tapping Send keeps the input focused: the keyboard stays up and nothing moves before the tap lands.
+dom.sendBtn.addEventListener("pointerdown", (event) => {
+  if (PHONE.matches && document.activeElement === dom.input) event.preventDefault();
+});
+
 dom.input.addEventListener("keydown", (event) => {
   if (state.mention.open && handleMentionKey(event)) return;
   if (event.key === "Escape" && state.replyTo) {
@@ -1867,7 +1903,8 @@ async function boot(): Promise<void> {
   applyView(parseHash());
   if (!state.me) askProfile();
   else {
-    dom.input.focus();
+    // On phones the keyboard (and typing mode) should open only when the box is tapped.
+    if (!PHONE.matches) dom.input.focus();
     void refreshUnread();
   }
 }

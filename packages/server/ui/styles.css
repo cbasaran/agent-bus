@@ -1478,15 +1478,19 @@ ul.md-list ul.md-list { list-style: circle; }
     max-height: 32vh;
   }
 
-  /* The message box sits above the conversation, where the iOS keyboard cannot cover it, and folds away. */
-  .main > .composer,
-  .main > .composer-open {
-    order: -1;
+  /* The height above the iOS keyboard (set by app.ts from visualViewport); 100dvh until it is known. */
+  .app {
+    height: var(--vvh, 100dvh);
   }
 
+  /* While typing: only the top bar, the message box and the messages. */
+  .app.typing .sidebar,
+  .app.typing .conv-header {
+    display: none;
+  }
+
+  /* The message box stays at the bottom, now right above the keyboard (page sized by --vvh), and folds away. */
   .main > .composer {
-    border-top: 0;
-    border-bottom: 1px solid var(--border);
     padding: 8px 10px;
   }
 
@@ -1495,7 +1499,7 @@ ul.md-list ul.md-list { list-style: circle; }
     width: 100%;
     padding: 10px 14px;
     border: 0;
-    border-bottom: 1px solid var(--border);
+    border-top: 1px solid var(--border);
     background: var(--panel);
     color: var(--accent);
     font-size: 15px;
@@ -1509,12 +1513,6 @@ ul.md-list ul.md-list { list-style: circle; }
   .main.composer-collapsed > .composer,
   .main:not(.composer-collapsed) > .composer-open {
     display: none;
-  }
-
-  /* With the box on top, @ suggestions open below the input. */
-  .mention-menu {
-    top: calc(100% + 6px);
-    bottom: auto;
   }
 
   /* iOS zooms into inputs with text under 16px. */
