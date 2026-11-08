@@ -1451,68 +1451,124 @@ ul.md-list ul.md-list { list-style: circle; }
   }
 }
 
-.composer-open,
-.composer-hide {
+.back-btn,
+.details-btn {
   display: none;
 }
 
 @media (max-width: 640px) {
+  /* One screen at a time: the open conversation, or (.phone-list) the top bar and the conversation list.
+     The page is pinned to the visible area above the iOS keyboard (--vvh, --vvt set by app.ts). */
   .app,
   .app.with-doc {
+    position: fixed;
+    left: 0;
+    right: 0;
+    top: var(--vvt, 0px);
+    height: var(--vvh, 100dvh);
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto auto minmax(0, 1fr);
-    grid-template-areas:
-      "top"
-      "side"
-      "main";
+    grid-template-rows: minmax(0, 1fr);
+    grid-template-areas: "main";
   }
 
   .app.with-doc {
+    grid-template-areas: "doc";
+  }
+
+  .app:not(.phone-list) .topbar,
+  .app:not(.phone-list) .sidebar {
+    display: none;
+  }
+
+  .app.phone-list {
+    grid-template-rows: auto minmax(0, 1fr);
     grid-template-areas:
       "top"
-      "side"
-      "doc";
+      "side";
   }
 
-  .sidebar {
-    max-height: 32vh;
-  }
-
-  /* The height above the iOS keyboard (set by app.ts from visualViewport); 100dvh until it is known. */
-  .app {
-    height: var(--vvh, 100dvh);
-  }
-
-  /* While typing: only the top bar, the message box and the messages. */
-  .app.typing .sidebar,
-  .app.typing .conv-header {
+  .app.phone-list .main,
+  .app.phone-list .doc-panel {
     display: none;
   }
 
-  /* The message box stays at the bottom, now right above the keyboard (page sized by --vvh), and folds away. */
-  .main > .composer {
-    padding: 8px 10px;
+  /* Conversation bar: ← (unread elsewhere), title, ⓘ for members and the agent panel. */
+  .conv-header {
+    padding: 4px 8px;
   }
 
-  .composer-open {
-    display: block;
-    width: 100%;
-    padding: 10px 14px;
+  .conv-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 36px;
+  }
+
+  .conv-title {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 17px;
+  }
+
+  .back-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex: none;
+    padding: 4px 8px;
     border: 0;
-    border-top: 1px solid var(--border);
-    background: var(--panel);
-    color: var(--accent);
-    font-size: 15px;
-    text-align: left;
+    background: transparent;
+    color: var(--text);
+    font-size: 22px;
+    line-height: 1;
   }
 
-  .composer-hide {
+  .badge-for-me {
+    background: #e5484d;
+  }
+
+  .details-btn {
     display: grid;
+    flex: none;
   }
 
-  .main.composer-collapsed > .composer,
-  .main:not(.composer-collapsed) > .composer-open {
+  .details-btn[aria-pressed="true"] {
+    color: var(--accent);
+  }
+
+  .main:not(.show-details) .conv-subtitle,
+  .main:not(.show-details) .agent-panel {
     display: none;
+  }
+
+  /* Few messages sit at the bottom, right above the box (as in chat apps), not at the top. */
+  .message-scroll {
+    display: flex;
+    flex-direction: column;
+    padding-bottom: 8px;
+  }
+
+  .message-list {
+    margin-top: auto;
+  }
+
+  /* Message box: one compact row on the keyboard, [📎] [Message…] [➤]. */
+  .main > .composer {
+    padding: 6px 8px;
+  }
+
+  .send-btn {
+    min-width: 44px;
+    padding: 0 12px;
+    font-size: 0;
+  }
+
+  .send-btn::before {
+    content: "➤";
+    font-size: 18px;
   }
 
   /* iOS zooms into inputs with text under 16px. */

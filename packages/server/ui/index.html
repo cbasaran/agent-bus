@@ -46,7 +46,11 @@
 
     <main id="main" class="main">
       <div class="conv-header">
-        <h1 id="conv-title" class="conv-title"></h1>
+        <div class="conv-bar">
+          <button id="back-btn" type="button" class="back-btn" title="Conversations">←<span id="back-badge" class="badge" hidden></span></button>
+          <h1 id="conv-title" class="conv-title"></h1>
+          <button id="details-btn" type="button" class="icon-btn details-btn" title="Members and details" aria-pressed="false">ⓘ</button>
+        </div>
         <div id="conv-subtitle" class="conv-subtitle"></div>
         <div id="agent-panel" class="agent-panel" hidden>
           <div id="agent-info"></div>
@@ -65,7 +69,6 @@
         <ol id="message-list" class="message-list"></ol>
         <div id="message-empty" class="message-empty" hidden></div>
       </div>
-      <button id="composer-open" type="button" class="composer-open">✎ Write a message</button>
       <form id="composer" class="composer" autocomplete="off">
         <div id="composer-error" class="composer-error" role="alert" hidden></div>
         <div id="reply-bar" class="reply-bar" hidden>
@@ -81,7 +84,6 @@
             <textarea id="composer-input" rows="1" placeholder="Message…  (Enter to send, Shift+Enter for a new line, @ to mention)"></textarea>
           </div>
           <button id="send-btn" type="submit" class="send-btn">Send</button>
-          <button id="composer-hide" type="button" class="icon-btn composer-hide" title="Hide the message box">▾</button>
         </div>
       </form>
       <div id="drop-overlay" class="drop-overlay" hidden>Drop files to attach</div>

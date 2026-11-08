@@ -82,8 +82,9 @@ const dom = {
   composerError: el<HTMLDivElement>("composer-error"),
   stagedFiles: el<HTMLUListElement>("staged-files"),
   attachBtn: el<HTMLButtonElement>("attach-btn"),
-  composerOpen: el<HTMLButtonElement>("composer-open"),
-  composerHide: el<HTMLButtonElement>("composer-hide"),
+  backBtn: el<HTMLButtonElement>("back-btn"),
+  backBadge: el<HTMLSpanElement>("back-badge"),
+  detailsBtn: el<HTMLButtonElement>("details-btn"),
   fileInput: el<HTMLInputElement>("file-input"),
   mentionMenu: el<HTMLUListElement>("mention-menu"),
   input: el<HTMLTextAreaElement>("composer-input"),
@@ -492,6 +493,7 @@ function setMe(id: string): void {
   dom.profileSelect.value = id;
   loadReadMarkers();
   renderAll();
+  loadDraft();
   void refreshUnread();
 }
 
@@ -745,9 +747,14 @@ function applyView(view: View): void {
     hideError();
     closeMention();
     setReplyTo(undefined);
+    setDetails(false);
   }
+  setPhoneList(false);
   renderAll();
-  if (changed) scrollToBottom();
+  if (changed) {
+    loadDraft();
+    scrollToBottom();
+  }
 }
 
 window.addEventListener("hashchange", () => applyView(parseHash()));
@@ -965,6 +972,7 @@ function renderAll(): void {
 }
 
 function renderSidebar(): void {
+  renderBackBadge();
   renderUnreadToggle();
   renderConversationList();
   renderAgentList();
@@ -1305,30 +1313,11 @@ function setReplyTo(message: Message | undefined): void {
   if (message) {
     const text = message.text.replace(/\s+/g, " ").trim();
     dom.replyBarText.textContent = `Replying to @${message.from}: ${text.length > 120 ? `${text.slice(0, 119)}…` : text || "(file)"}`;
-    setComposerCollapsed(false);
     dom.input.focus();
   }
 }
 
 dom.replyCancel.addEventListener("click", () => setReplyTo(undefined));
-
-// Phones (≤640 px): the message box sits on top and folds into a "Write a message" bar (remembered per browser).
-const COMPOSER_COLLAPSED_KEY = "agent-bus.composerCollapsed";
-
-function setComposerCollapsed(collapsed: boolean): void {
-  dom.main.classList.toggle("composer-collapsed", collapsed);
-  localStorage.setItem(COMPOSER_COLLAPSED_KEY, collapsed ? "1" : "0");
-}
-
-dom.main.classList.toggle("composer-collapsed", localStorage.getItem(COMPOSER_COLLAPSED_KEY) === "1");
-dom.composerHide.addEventListener("click", () => {
-  dom.input.blur();
-  setComposerCollapsed(true);
-});
-dom.composerOpen.addEventListener("click", () => {
-  setComposerCollapsed(false);
-  dom.input.focus();
-});
 
 const MENTION_RE = /(^|[\s({,])(@(?:\{[^}\n]*\}|[a-z0-9][a-z0-9_-]*(?:@[a-z0-9][a-z0-9_-]*)?))/gi;
 
@@ -1503,7 +1492,7 @@ function updateComposerState(): void {
     : `Message ${target}…  (Enter to send, Shift+Enter for a new line, @ to mention)`;
 }
 
-/** The phone layout of styles.css (message box on top, folding). */
+/** The phone layout of styles.css (one screen at a time: the conversation list or a conversation). */
 const PHONE = window.matchMedia("(max-width: 640px)");
 
 function autosize(): void {
@@ -1610,6 +1599,7 @@ async function send(): Promise<void> {
       body: JSON.stringify(request),
     });
     dom.input.value = "";
+    saveDraft(view, "");
     state.staged = [];
     setReplyTo(undefined);
     autosize();
@@ -1632,36 +1622,71 @@ dom.composer.addEventListener("submit", (event) => {
   void send();
 });
 
-// ---- Phones: the iOS keyboard covers the page instead of shrinking it ----
+// ---- Phones: one screen at a time (the conversation list, or one conversation), sized above the keyboard ----
 
-// Size the page to the area above the keyboard (CSS var --vvh), so the newest messages end just above it.
+// The iOS keyboard covers the page instead of shrinking it: pin the page to the visible area above it
+// (CSS vars --vvh and --vvt), so the message box sits on the keyboard and the newest messages right above.
 const viewport = window.visualViewport;
 function fitViewport(): void {
   if (!viewport || !PHONE.matches) return;
   const stick = nearBottom();
-  document.documentElement.style.setProperty("--vvh", `${Math.round(viewport.height)}px`);
-  // iOS scrolls the whole page to show the focused input; the page itself never needs scrolling.
-  window.scrollTo(0, 0);
+  const root = document.documentElement.style;
+  root.setProperty("--vvh", `${Math.round(viewport.height)}px`);
+  root.setProperty("--vvt", `${Math.round(viewport.offsetTop)}px`);
   if (stick) scrollToBottom();
 }
 viewport?.addEventListener("resize", fitViewport);
 viewport?.addEventListener("scroll", fitViewport);
 
-// While typing, the sidebar and conversation header step aside (CSS .typing) so the messages get the room.
-let typingTimer: Timer | undefined;
-dom.input.addEventListener("focus", () => {
-  clearTimeout(typingTimer);
-  if (!PHONE.matches) return;
-  const stick = nearBottom();
-  dom.app.classList.add("typing");
-  if (stick) scrollToBottom();
+/** Phones: show the conversation list (← in the conversation bar) instead of the open conversation. */
+function setPhoneList(on: boolean): void {
+  dom.app.classList.toggle("phone-list", on);
+}
+dom.backBtn.addEventListener("click", () => {
+  dom.input.blur();
+  setPhoneList(true);
 });
-dom.input.addEventListener("blur", () => {
-  // Later, so a tap inside the composer (attach, remove a file) does not make the layout jump under the finger.
-  typingTimer = setTimeout(() => {
-    if (!dom.composer.contains(document.activeElement)) dom.app.classList.remove("typing");
-  }, 300);
-});
+
+/** Phones: members, subtitle and the agent panel stay folded behind ⓘ so the messages get the screen. */
+function setDetails(on: boolean): void {
+  dom.main.classList.toggle("show-details", on);
+  dom.detailsBtn.setAttribute("aria-pressed", String(on));
+}
+dom.detailsBtn.addEventListener("click", () => setDetails(!dom.main.classList.contains("show-details")));
+
+/** Unread messages in the other conversations, on the ← button. */
+function renderBackBadge(): void {
+  let n = 0;
+  let forMe = false;
+  for (const [id, count] of state.unread) {
+    if (isCurrent(id)) continue;
+    n += count;
+    if ((state.attention.get(id) ?? 0) > 0) forMe = true;
+  }
+  dom.backBadge.hidden = n === 0;
+  dom.backBadge.textContent = n > 99 ? "99+" : String(n);
+  dom.backBadge.classList.toggle("badge-for-me", forMe);
+}
+
+// ---- Drafts: unsent text is kept per conversation and profile, across navigation and reloads ----
+
+const DRAFT_KEY_PREFIX = "agent-bus.draft.";
+
+function draftKey(view: View): string {
+  return `${DRAFT_KEY_PREFIX}${state.me}.${viewHash(view)}`;
+}
+
+function saveDraft(view: View, text: string): void {
+  if (!state.me) return;
+  if (text.trim()) localStorage.setItem(draftKey(view), text);
+  else localStorage.removeItem(draftKey(view));
+}
+
+function loadDraft(): void {
+  dom.input.value = state.me ? (localStorage.getItem(draftKey(state.view)) ?? "") : "";
+  autosize();
+  updateComposerState();
+}
 
 // Tapping Send keeps the input focused: the keyboard stays up and nothing moves before the tap lands.
 dom.sendBtn.addEventListener("pointerdown", (event) => {
@@ -1685,6 +1710,7 @@ dom.input.addEventListener("input", () => {
   autosize();
   updateComposerState();
   updateMention();
+  saveDraft(state.view, dom.input.value);
 });
 dom.input.addEventListener("click", () => updateMention());
 dom.input.addEventListener("blur", () => closeMention());
@@ -1804,6 +1830,7 @@ function insertMention(item: MentionCandidate): void {
   dom.input.setSelectionRange(pos, pos);
   closeMention();
   autosize();
+  saveDraft(state.view, dom.input.value);
   updateComposerState();
   dom.input.focus();
 }
@@ -1900,10 +1927,14 @@ async function boot(): Promise<void> {
   state.me = saved && state.humans.includes(saved) ? saved : "";
   if (state.me) loadReadMarkers();
   connectViewer();
+  // Phones opened without a conversation in the address start on the conversation list.
+  const startOnList = location.hash === "";
   applyView(parseHash());
+  if (startOnList) setPhoneList(true);
+  loadDraft();
   if (!state.me) askProfile();
   else {
-    // On phones the keyboard (and typing mode) should open only when the box is tapped.
+    // On phones the keyboard should open only when the box is tapped.
     if (!PHONE.matches) dom.input.focus();
     void refreshUnread();
   }
