@@ -245,16 +245,17 @@ function funnelIcon(): SVGSVGElement {
   return svg;
 }
 
-function mentionList(ids: readonly string[]): string {
-  return ids.map((id) => `@${id}`).join(", ");
+/** Names as the website shows them: plain ids, no "@" (that is only for addressing in message text). */
+function nameList(ids: readonly string[]): string {
+  return ids.join(", ");
 }
 
-/** "@all", or a group's members: everyone but me (all of them if I am not a member). */
+/** "all", or a group's members: everyone but me (all of them if I am not a member). */
 function conversationTitle(conv: Conversation): string {
-  if (conv.kind === "all") return "@all";
+  if (conv.kind === "all") return "all";
   const ids = conv.members.length > 0 ? conv.members : conv.addressed;
   const others = ids.filter((id) => id !== state.me);
-  return mentionList(others.length > 0 ? others : ids);
+  return nameList(others.length > 0 ? others : ids);
 }
 
 function shortPath(path: string): string {
@@ -336,7 +337,7 @@ function renderAgentPanel(): void {
   const where = [agent.path ? shortPath(agent.path) : "", agent.host ?? "", agent.harness ?? ""].filter(Boolean).join(" · ");
   if (where) rows.push(["Where", where]);
   if (agent.connections > 1) rows.push(["Sessions", `${agent.connections} connected (same folder open twice)`]);
-  rows.push(["@all", agent.settings.all === "wake" ? "starts a turn" : "quiet (read at its next turn)"]);
+  rows.push(["To all", agent.settings.all === "wake" ? "starts a turn" : "quiet (read at its next turn)"]);
   const list = h("dl", "agent-panel-list");
   for (const [label, value] of rows) {
     const dd = h("dd");
@@ -632,7 +633,7 @@ dom.notifyBtn.addEventListener("click", () => {
 function notify(message: Message, conv: Conversation): void {
   if (notifyState() !== "granted" || (isCurrent(conv.id) && document.hasFocus())) return;
   const files = message.files.length > 0 ? ` [${message.files.map((f) => f.name).join(", ")}]` : "";
-  const n = new Notification(`@${message.from} · ${conversationTitle(conv)}`, {
+  const n = new Notification(`${message.from} · ${conversationTitle(conv)}`, {
     body: `${message.text.slice(0, 300)}${files}`,
     tag: `agent-bus-${message.seq}`,
   });
@@ -674,7 +675,7 @@ function applyTitle(): void {
 function renderProfileSelect(): void {
   dom.profileSelect.replaceChildren(
     ...state.humans.map((id) => {
-      const option = h("option", undefined, `@${id}`);
+      const option = h("option", undefined, id);
       option.value = id;
       return option;
     })
@@ -685,7 +686,7 @@ function renderProfileSelect(): void {
 function askProfile(): void {
   dom.profileChoices.replaceChildren(
     ...state.humans.map((id) => {
-      const button = h("button", "btn btn-primary profile-choice", `@${id}`);
+      const button = h("button", "btn btn-primary profile-choice", id);
       button.type = "button";
       button.addEventListener("click", () => {
         dom.profileDialog.close();
@@ -1016,7 +1017,7 @@ function renderConversationList(): void {
       }
     }
     else if (conv.lastMessageAt > 0) button.append(h("span", "side-item-time", relativeTime(conv.lastMessageAt)));
-    button.title = conv.kind === "all" ? "Delivered to every agent" : `Members: ${mentionList(conv.members)}`;
+    button.title = conv.kind === "all" ? "Delivered to every agent" : `Members: ${nameList(conv.members)}`;
     button.addEventListener("click", () => navigate({ kind: "conversation", id: conv.id }));
     li.append(button);
     return li;
@@ -1026,7 +1027,7 @@ function renderConversationList(): void {
     const button = h("button", "side-item conv-item active");
     button.type = "button";
     const text = h("span", "side-item-text");
-    text.append(h("span", "side-item-title", mentionList(state.view.to)), h("span", "side-item-detail", "new — not sent yet"));
+    text.append(h("span", "side-item-title", nameList(state.view.to)), h("span", "side-item-detail", "new — not sent yet"));
     button.append(text);
     li.append(button);
     items.splice(1, 0, li);
@@ -1034,7 +1035,7 @@ function renderConversationList(): void {
   if (state.unreadOnly && shown.every((c) => isCurrent(c.id))) {
     items.push(h("li", "side-empty", "No unread conversations."));
   } else if (!state.unreadOnly && state.filter.size > 0 && shown.every((c) => c.kind === "all")) {
-    items.push(h("li", "side-empty", `No conversations with ${mentionList([...state.filter])} yet.`));
+    items.push(h("li", "side-empty", `No conversations with ${nameList([...state.filter])} yet.`));
   }
   dom.conversationList.replaceChildren(...items);
 }
@@ -1053,7 +1054,7 @@ function renderFilterNote(hidden: Conversation[]): void {
     state.filter.clear();
     renderSidebar();
   });
-  const parts: Array<string | HTMLElement> = [`with ${mentionList([...state.filter])} · `, clear];
+  const parts: Array<string | HTMLElement> = [`with ${nameList([...state.filter])} · `, clear];
   if (hiddenUnread > 0) {
     const note = h("span", hiddenForMe ? "filter-hidden filter-hidden-me" : "filter-hidden", ` · ${hiddenUnread} unread hidden`);
     parts.push(note);
@@ -1092,7 +1093,7 @@ function renderAgentList(): void {
       if (!agent.online) button.classList.add("offline");
       const dot = h("span", `dot ${agent.online ? "dot-on" : "dot-off"}`);
       const text = h("span", "side-item-text");
-      const name = h("span", "side-item-title", `@${agent.id}`);
+      const name = h("span", "side-item-title", agent.id);
       if (agent.connections > 1) name.append(h("span", "conn-count", ` ×${agent.connections}`));
       text.append(name);
       const detail = agentDetail(agent, showHost);
@@ -1101,7 +1102,7 @@ function renderAgentList(): void {
       if (statusLine) text.append(statusLine);
       button.append(dot, text);
       const tip = [
-        `@${agent.id}`,
+        agent.id,
         agent.harness ? `harness: ${agent.harness}` : "",
         agent.path ? `path: ${agent.path}` : "",
         agent.host ? `host: ${agent.host}` : "",
@@ -1116,8 +1117,8 @@ function renderAgentList(): void {
       const filter = h("button", `agent-filter${filtering ? " on" : ""}`);
       filter.type = "button";
       filter.title = filtering
-        ? `Showing only conversations with @${agent.id} — click to remove`
-        : `Show only conversations with @${agent.id}`;
+        ? `Showing only conversations with ${agent.id} — click to remove`
+        : `Show only conversations with ${agent.id}`;
       filter.setAttribute("aria-pressed", String(filtering));
       filter.append(funnelIcon());
       filter.addEventListener("click", () => toggleFilter(agent.id));
@@ -1130,9 +1131,9 @@ function renderAgentList(): void {
 function renderHeader(): void {
   const view = state.view;
   if (view.kind === "draft") {
-    dom.convTitle.textContent = mentionList(view.to);
-    dom.convSubtitle.textContent = `New conversation between you and ${mentionList(view.to)} — created when you send the first message.`;
-    titleBase = `${mentionList(view.to)} · Agent Bus`;
+    dom.convTitle.textContent = nameList(view.to);
+    dom.convSubtitle.textContent = `New conversation between you and ${nameList(view.to)} — created when you send the first message.`;
+    titleBase = `${nameList(view.to)} · Agent Bus`;
     applyTitle();
     return;
   }
@@ -1154,7 +1155,7 @@ function renderHeader(): void {
     const membership = conv.members.includes(state.me)
       ? ""
       : " You are viewing; you join when you send a message.";
-    dom.convSubtitle.textContent = `Members: ${mentionList(conv.members)}.${membership}`;
+    dom.convSubtitle.textContent = `Members: ${nameList(conv.members)}.${membership}`;
   }
 }
 
@@ -1168,7 +1169,7 @@ function showEmpty(text: string): void {
 function renderMessages(): void {
   const view = state.view;
   if (view.kind === "draft") {
-    showEmpty(`No messages yet. Write below to start the conversation with ${mentionList(view.to)}.`);
+    showEmpty(`No messages yet. Write below to start the conversation with ${nameList(view.to)}.`);
     return;
   }
   const cache = state.caches.get(view.id);
@@ -1209,7 +1210,7 @@ function renderMessage(message: Message, continued: boolean): HTMLLIElement {
   li.dataset.seq = String(message.seq);
 
   const head = h("div", "msg-head");
-  const sender = h("button", "msg-sender", `@${message.from}`);
+  const sender = h("button", "msg-sender", message.from);
   sender.type = "button";
   sender.title = human ? "Human" : "Agent — click to open a direct conversation";
   if (!human) sender.addEventListener("click", () => navigate({ kind: "draft", to: [message.from] }));
@@ -1250,9 +1251,9 @@ function renderReceipts(message: Message): HTMLDivElement | null {
   const status = pending.length > 0 ? "receipts-pending" : delivered.length > 0 ? "receipts-delivered" : "receipts-seen";
   const el = h("div", `msg-receipts ${status}`);
   el.dataset.receipts = String(message.seq);
-  const names = (list: typeof receipts) => list.map((r) => `@${r.to}`).join(", ");
+  const names = (list: typeof receipts) => list.map((r) => r.to).join(", ");
   if (receipts.length === 1) {
-    const to = `@${receipts[0]?.to}`;
+    const to = receipts[0]?.to ?? "";
     el.textContent = seen.length ? `✓✓ seen by ${to}` : delivered.length ? `✓ delivered to ${to} · not seen yet` : `○ not delivered yet to ${to}`;
   } else if (seen.length === receipts.length) {
     el.textContent = `✓✓ seen by all ${receipts.length}`;
@@ -1268,10 +1269,10 @@ function renderReceipts(message: Message): HTMLDivElement | null {
   el.title = receipts
     .map((r) =>
       r.seenAt !== null
-        ? `@${r.to}: seen ${fullFormat.format(r.seenAt)}`
+        ? `${r.to}: seen ${fullFormat.format(r.seenAt)}`
         : r.deliveredAt !== null
-          ? `@${r.to}: delivered ${fullFormat.format(r.deliveredAt)}, not seen yet`
-          : `@${r.to}: not delivered yet`
+          ? `${r.to}: delivered ${fullFormat.format(r.deliveredAt)}, not seen yet`
+          : `${r.to}: not delivered yet`
     )
     .join("\n");
   return el;
@@ -1295,7 +1296,7 @@ function renderQuote(quote: Quote): HTMLButtonElement {
   el.type = "button";
   el.title = `Reply to #${quote.seq} — click to show it`;
   const files = quote.files > 0 ? ` · ${quote.files} file${quote.files === 1 ? "" : "s"}` : "";
-  el.append(h("span", "msg-quote-from", `@${quote.from}`), h("span", "msg-quote-text", `${quote.text || "(no text)"}${files}`));
+  el.append(h("span", "msg-quote-from", quote.from), h("span", "msg-quote-text", `${quote.text || "(no text)"}${files}`));
   el.addEventListener("click", () => {
     const target = dom.messageList.querySelector<HTMLElement>(`[data-seq="${quote.seq}"]`);
     if (!target) return;
@@ -1312,7 +1313,7 @@ function setReplyTo(message: Message | undefined): void {
   dom.replyBar.hidden = !message;
   if (message) {
     const text = message.text.replace(/\s+/g, " ").trim();
-    dom.replyBarText.textContent = `Replying to @${message.from}: ${text.length > 120 ? `${text.slice(0, 119)}…` : text || "(file)"}`;
+    dom.replyBarText.textContent = `Replying to ${message.from}: ${text.length > 120 ? `${text.slice(0, 119)}…` : text || "(file)"}`;
     dom.input.focus();
   }
 }
@@ -1486,7 +1487,7 @@ function updateComposerState(): void {
   dom.sendBtn.textContent = state.sending ? "Sending…" : "Send";
   const view = state.view;
   const conv = view.kind === "conversation" ? state.conversations.get(view.id) : undefined;
-  const target = view.kind === "draft" ? mentionList(view.to) : conv ? conversationTitle(conv) : "";
+  const target = view.kind === "draft" ? nameList(view.to) : conv ? conversationTitle(conv) : "";
   dom.input.placeholder = PHONE.matches
     ? `Message ${target}…`
     : `Message ${target}…  (Enter to send, Shift+Enter for a new line, @ to mention)`;
@@ -1886,7 +1887,7 @@ function openGroupDialog(): void {
         box.type = "checkbox";
         box.value = choice.id;
         const text = h("span", "side-item-text");
-        text.append(h("span", "side-item-title", `@${choice.id}`), h("span", "side-item-detail", choice.detail));
+        text.append(h("span", "side-item-title", choice.id), h("span", "side-item-detail", choice.detail));
         label.append(box, h("span", `dot ${choice.dot}`), text);
         li.append(label);
         return li;
