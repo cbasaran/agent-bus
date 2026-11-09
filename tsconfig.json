@@ -6,7 +6,10 @@
     "packages/server/ui/**/*.ts",
     "packages/server/scripts/**/*.ts",
     "packages/cli/src/**/*.ts",
+    "packages/client/src/**/*.ts",
     "packages/omp-extension/src/**/*.ts",
+    "packages/antigravity-plugin/src/**/*.ts",
+    "packages/antigravity-plugin/scripts/**/*.ts",
     "tests/**/*.ts"
   ]
 }

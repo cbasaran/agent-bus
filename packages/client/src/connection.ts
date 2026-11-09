@@ -1,6 +1,7 @@
 // Harness-neutral client for the message bus: one agent connection (WS /ws/agent) with reconnect,
 // in-order delivery handling with acks, receipts for this agent's own messages, and the
 // write/send/set calls. Harness bindings decide how a delivery reaches their session.
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import type {
   ActivityEvent,
@@ -38,6 +39,19 @@ export interface BusConnectionOptions {
 
 const RECONNECT_MIN_MS = 1000;
 const RECONNECT_MAX_MS = 30_000;
+
+/** Upload types by extension (the website previews images and renders markdown); everything else is generic. */
+const MIME_TYPES: Record<string, string> = {
+  ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp",
+  ".svg": "image/svg+xml", ".heic": "image/heic", ".pdf": "application/pdf", ".md": "text/markdown",
+  ".markdown": "text/markdown", ".txt": "text/plain", ".log": "text/plain", ".csv": "text/csv", ".json": "application/json",
+  ".html": "text/html", ".patch": "text/x-diff", ".diff": "text/x-diff", ".zip": "application/zip",
+  ".gz": "application/gzip", ".tar": "application/x-tar", ".mp3": "audio/mpeg", ".wav": "audio/wav", ".mp4": "video/mp4",
+};
+
+function mimeType(filePath: string): string {
+  return MIME_TYPES[path.extname(filePath).toLowerCase()] ?? "application/octet-stream";
+}
 
 export class BusConnection {
   /** Bus id assigned by the server; undefined until the first `joined`. */
@@ -227,13 +241,17 @@ export class BusConnection {
 
   async uploadFile(filePath: string): Promise<FileRef> {
     const from = this.requireId();
-    const file = Bun.file(filePath);
-    if (!(await file.exists())) throw new Error(`File not found: ${filePath}`);
+    let body: Buffer;
+    try {
+      body = await readFile(filePath);
+    } catch {
+      throw new Error(`File not found: ${filePath}`);
+    }
     const qs = new URLSearchParams({ from, name: path.basename(filePath) });
     const res = await this.request<{ file: FileRef }>(`/api/files?${qs}`, {
       method: "POST",
-      headers: { "Content-Type": file.type || "application/octet-stream" },
-      body: file,
+      headers: { "Content-Type": mimeType(filePath) },
+      body: new Uint8Array(body),
     });
     return res.file;
   }
@@ -242,7 +260,8 @@ export class BusConnection {
     const res = await fetch(`${this.baseUrl}/api/files/${encodeURIComponent(ref.id)}`);
     if (!res.ok) throw new Error(`Download of ${ref.name} failed: HTTP ${res.status}`);
     const dest = path.join(destDir, `${ref.id}-${ref.name.replace(/[\\/]/g, "_")}`);
-    await Bun.write(dest, res);
+    await mkdir(destDir, { recursive: true });
+    await writeFile(dest, new Uint8Array(await res.arrayBuffer()));
     return dest;
   }
 

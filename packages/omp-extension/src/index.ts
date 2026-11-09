@@ -1,26 +1,28 @@
-// omp extension: joins the message bus as the session's project folder and exposes the
-// `message-bus` tool (write / send / set). Messages for this agent arrive like composer input:
+// omp extension: joins the message bus as the session's project folder and exposes the `message-bus` tool
+// (ops and texts in packages/client/src/tool.ts). Messages for this agent arrive like composer input:
 // idle → a turn starts; busy → `aside`: at the next step of the running turn, without cutting a tool
 // batch short, and ending a running `wait` (an agent waiting inside its turn for a bus reply would
 // otherwise never see it); quiet (@all from other agents, unless `set all wake`) → added to the
 // conversation at the next turn without starting one.
 // Only the main session joins; subagents share the folder but are not bus participants.
-import { realpathSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { deliveryHeader, deliveryHeaderSeqs, describeReceipts, formatAddress, formatUtc, quoteLine } from "../../protocol/src/address";
+import { ActivityLog, contentText, contentThinking } from "../../client/src/activity";
+import { BusConnection, type Delivery } from "../../client/src/connection";
 import {
-  DEFAULT_BUS_PORT,
-  type AgentStatus,
-  type Conversation,
-  type FileRef,
-  type Message,
-  type PostMessageResponse,
-  type ReadResponse,
-  type ReceiptFrame,
-} from "../../protocol/src/types";
-import { ActivityLog, contentText, contentThinking } from "./activity";
-import { BusConnection, type Delivery } from "./connection";
+  BusTool,
+  deliveryText,
+  isUnderTempDir,
+  TOOL_NAME,
+  TOOL_PARAMS,
+  toolDescription,
+  type MessageBusToolParams,
+  type ToolParam,
+} from "../../client/src/tool";
+import { deliveryHeaderSeqs } from "../../protocol/src/address";
+import { DEFAULT_BUS_PORT, type AgentStatus, type ReceiptFrame } from "../../protocol/src/types";
+
+export { TOOL_NAME, type MessageBusToolParams };
 
 interface ZodSchemaLike {
   optional(): ZodSchemaLike;
@@ -34,21 +36,6 @@ interface ZodLike {
   number(): ZodSchemaLike;
   enum(values: [string, ...string[]]): ZodSchemaLike;
   array(item: ZodSchemaLike): ZodSchemaLike;
-}
-
-export interface MessageBusToolParams {
-  op: "reply" | "write" | "send" | "set" | "inbox" | "show" | "history" | "search";
-  message_id?: number;
-  to?: string;
-  message?: string;
-  files?: string[];
-  key?: string;
-  value?: string;
-  query?: string;
-  sender?: string;
-  since?: number;
-  limit?: number;
-  scope?: "mine" | "all";
 }
 
 interface ToolResult {
@@ -114,118 +101,33 @@ export interface MessageBusApi {
   ): void;
 }
 
-export const TOOL_NAME = "message-bus";
-/** Every argument the tool takes; anything else is rejected rather than silently ignored. */
-const TOOL_ARGS: readonly string[] = [
-  "op", "message_id", "to", "message", "files", "key", "value", "query", "sender", "since", "limit", "scope",
-];
-
-/** `dir` is the temp directory (`os.tmpdir()`, symlinks resolved) or inside it. */
-function isUnderTempDir(dir: string): boolean {
-  let tmp = os.tmpdir();
-  try {
-    tmp = realpathSync(tmp);
-    dir = realpathSync(dir);
-  } catch {
-    // Keep the unresolved paths.
-  }
-  return dir === tmp || dir.startsWith(tmp.endsWith(path.sep) ? tmp : tmp + path.sep);
+/** The tool's parameters as an omp (zod) schema. */
+function zodParameters(z: ZodLike): ZodSchemaLike {
+  const one = (param: ToolParam): ZodSchemaLike => {
+    const base =
+      param.enum !== undefined
+        ? z.enum(param.enum as unknown as [string, ...string[]])
+        : param.type === "number"
+          ? z.number()
+          : param.type === "string[]"
+            ? z.array(z.string())
+            : z.string();
+    return (param.name === "op" ? base : base.optional()).describe(param.description);
+  };
+  return z.object(Object.fromEntries(TOOL_PARAMS.map((param) => [param.name, one(param)])));
 }
-
-/** Text injected into the session for one delivery; `savedFiles` are local paths of its attachments. */
-export function formatDelivery(delivery: Delivery, savedFiles: string[]): string {
-  const { message, conversation, replyTo } = delivery;
-  const where = conversation.kind === "all" ? "@all" : formatAddress(conversation.addressed);
-  const lines = [deliveryHeader(message.seq, message.from, where, message.createdAt)];
-  if (message.quote) lines.push(quoteLine(message.quote));
-  if (message.text) lines.push(message.text);
-  message.files.forEach((file, i) => {
-    lines.push(`File: ${savedFiles[i] ?? file.name} (${file.name}, ${file.size} B, sha256 ${file.sha256.slice(0, 12)}…)`);
-  });
-  lines.push(`(Reply only if they need something from you: ${TOOL_NAME} reply, message_id ${message.seq} → ${replyTo}.)`);
-  return lines.join("\n");
-}
-
-/** Per-message text shown by inbox and history; `show` gives all of it. */
-const READ_TEXT_CHARS = 3000;
-/** Total size of one read result, so a large page cannot flood the context (older messages are dropped first). */
-const READ_BUDGET_CHARS = 30_000;
-
-/**
- * One message as the read ops list it. Deliberately not the delivery header (`[message-bus] #n @…`): read results
- * must not look like new messages, and the seen-detection keys on that header.
- */
-export function formatReadMessage(message: Message, conversation: Conversation | undefined, maxText: number, savedFiles: string[] = []): string {
-  const where = !conversation ? message.conversationId : conversation.kind === "all" ? "@all" : formatAddress(conversation.members);
-  const lines = [`#${message.seq} @${message.from} → ${where} · ${formatUtc(message.createdAt)}`];
-  if (message.quote) lines.push(quoteLine(message.quote));
-  if (message.text) {
-    lines.push(
-      message.text.length > maxText
-        ? `${message.text.slice(0, maxText)}… (${message.text.length} chars; op=show message_id ${message.seq} for all)`
-        : message.text
-    );
-  }
-  message.files.forEach((file, i) => lines.push(`File: ${savedFiles[i] ?? file.name} (${file.name}, ${file.size} B)`));
-  return lines.join("\n");
-}
-
-/** "#n · time · @from → where: …snippet…" around the first match of `query`. */
-export function formatSearchHit(message: Message, conversation: Conversation | undefined, query: string): string {
-  const where = !conversation ? message.conversationId : conversation.kind === "all" ? "@all" : formatAddress(conversation.members);
-  const flat = message.text.replace(/\s+/g, " ").trim();
-  const at = query ? flat.toLowerCase().indexOf(query.toLowerCase()) : 0;
-  const start = Math.max(0, at - 80);
-  const snippet = `${start > 0 ? "…" : ""}${flat.slice(start, start + 200)}${start + 200 < flat.length ? "…" : ""}`;
-  const files = message.files.length > 0 ? ` [${message.files.map((f) => f.name).join(", ")}]` : "";
-  return `#${message.seq} · ${formatUtc(message.createdAt)} · @${message.from} → ${where}: ${snippet || "(no text)"}${files}`;
-}
-
-/** Joins entries newest-last within the budget, dropping the oldest first. */
-function withinBudget(entries: string[], separator: string): { text: string; dropped: number } {
-  const kept: string[] = [];
-  let size = 0;
-  for (let i = entries.length - 1; i >= 0; i--) {
-    const entry = entries[i] ?? "";
-    if (kept.length > 0 && size + entry.length > READ_BUDGET_CHARS) break;
-    kept.unshift(entry);
-    size += entry.length + separator.length;
-  }
-  return { text: kept.join(separator), dropped: entries.length - kept.length };
-}
-
-/** How long write/send wait for recipients' harnesses to accept the message before reporting (ms). */
-const receiptWaitMs = (): number => Number(process.env.AGENT_BUS_RECEIPT_WAIT_MS) || 5000;
 
 export default function messageBus(pi: MessageBusApi): void {
   let connection: BusConnection | undefined;
+  let tool: BusTool | undefined;
   let sessionCtx: MessageBusContext | undefined;
-  const z = pi.zod;
-  /** Group messages this session wrote whose recipients were still pending when the tool returned. */
-  const awaitingReceipts = new Map<number, Set<string>>();
 
-  /** Waits for receipts and returns the delivery line for the tool result; remembers late group recipients. */
-  const deliveryStatus = async (conn: BusConnection, sent: PostMessageResponse): Promise<string> => {
-    const message = await conn.waitForReceipts(sent.message.seq, receiptWaitMs());
-    const pending = message.receipts.filter((r) => r.deliveredAt === null).map((r) => r.to);
-    const late = pending.length > 0 && sent.conversation.kind === "group";
-    if (late) awaitingReceipts.set(message.seq, new Set(pending));
-    return `${describeReceipts(message.receipts)}${late ? ". You will be told when they receive it" : ""}`;
-  };
+  const quietly = (content: string): void =>
+    pi.sendMessage({ customType: TOOL_NAME, content, display: true, attribution: "agent" }, { deliverAs: "nextTurn" });
 
   const onReceipt = (receipt: ReceiptFrame): void => {
-    const pending = awaitingReceipts.get(receipt.seq);
-    if (!pending?.delete(receipt.to)) return;
-    if (pending.size === 0) awaitingReceipts.delete(receipt.seq);
-    pi.sendMessage(
-      {
-        customType: TOOL_NAME,
-        content: `[message-bus] @${receipt.to} has now received your message #${receipt.seq} (conversation ${receipt.conversationId}).`,
-        display: true,
-        attribution: "agent",
-      },
-      { deliverAs: "nextTurn" }
-    );
+    const notice = tool?.receiptNotice(receipt);
+    if (notice) quietly(notice);
   };
 
   /** Delivered seqs the model has not been given yet. */
@@ -234,23 +136,11 @@ export default function messageBus(pi: MessageBusApi): void {
   const deliver = async (delivery: Delivery): Promise<void> => {
     const conn = connection;
     if (!conn?.id) throw new Error("delivery before join");
-    const saved: string[] = [];
-    if (delivery.message.files.length > 0) {
-      const dir = path.join(os.homedir(), ".agent-bus", "received", conn.id);
-      for (const file of delivery.message.files) saved.push(await conn.downloadFile(file, dir));
-    }
-    const text = formatDelivery(delivery, saved);
+    const text = await deliveryText(conn, delivery);
     unseen.add(delivery.message.seq);
-    if (!delivery.wake) {
-      pi.sendMessage(
-        { customType: TOOL_NAME, content: text, display: true, attribution: "agent" },
-        { deliverAs: "nextTurn" }
-      );
-    } else if (sessionCtx?.isIdle() ?? true) {
-      pi.sendUserMessage(text, { attribution: "agent" });
-    } else {
-      pi.sendUserMessage(text, { deliverAs: "aside", attribution: "agent" });
-    }
+    if (!delivery.wake) quietly(text);
+    else if (sessionCtx?.isIdle() ?? true) pi.sendUserMessage(text, { attribution: "agent" });
+    else pi.sendUserMessage(text, { deliverAs: "aside", attribution: "agent" });
   };
 
   // A delivery is "seen" once its header is in what goes to the model (idle start, dequeued follow-up, or
@@ -290,6 +180,7 @@ export default function messageBus(pi: MessageBusApi): void {
       onLog: (line) => console.error(`[message-bus] ${line}`),
     });
     connection = conn;
+    tool = new BusTool(conn);
     conn.connect();
     // Stored by the connection and sent once it has joined (and after every rejoin).
     publishStatus();
@@ -381,149 +272,23 @@ export default function messageBus(pi: MessageBusApi): void {
     activityLog.dispose();
     connection?.close();
     connection = undefined;
+    tool = undefined;
     sessionCtx = undefined;
   });
 
   pi.registerTool({
     name: TOOL_NAME,
     label: "Message bus",
-    description:
-      "Talk to the other agents and the humans (@can, @umit) on the shared message bus. " +
-      // Same text as the cost note in packages/hermes-plugin/message-bus/__init__.py.
-      "Every message you send starts a paid model turn for each agent it reaches (@all reaches every agent), so use the " +
-      "bus sparingly: write only when the recipients need it (a result, a decision, a question, a claim or release of a " +
-      "shared resource). Do not send acknowledgements, thanks or \"noted/received\" messages, and do not restate other " +
-      "agents' messages; not replying is the default. Send to the fewest recipients who need it: @id or @{ids} rather " +
-      "than @all, and only the agents who have to read or act on it. Your bus id comes from your " +
-      "project folder and is shown in every result (sessions started in the temp directory do not join). " +
-      "Messages for you arrive in this conversation on their own as " +
-      "\"[message-bus] #<message_id> @sender → …\", also while you are working: after your current tool call finishes, " +
-      "and they end a running `wait`. So never poll, and never read the bus database or files under ~/.agent-bus to " +
-      "look for replies; keep working (or wait) and the reply comes to you. " +
-      "op=reply: answer a message you received: `message_id` (the #number) plus `message` and/or `files`; it goes to that " +
-      "message's conversation, so you never need to work out an address. " +
-      "op=write: start or continue a conversation: `to` is \"@all\", \"@id\" or \"@{id1,id2}\" (a group; the same set always " +
-      "reuses the same conversation), plus `message` and/or `files` (local paths). " +
-      "op=send: the same as write, with `files` required. Unknown arguments are rejected and nothing is sent; every " +
-      "result says what the bus stored (text length, file names). " +
-      "op=set: `key` + `value`; settings: all = wake | quiet (whether @all messages from other agents start a turn for you; default quiet). " +
-      "Reading (no turns for anyone, only your own tokens; never read the bus database instead): " +
-      "op=inbox: messages sent to you, newest `limit` (default 20), optionally only after #`since`. " +
-      "op=show: one message by `message_id`, in full, with its files downloaded. " +
-      "op=history: the last `limit` messages of a conversation: `to` (as you would write to it, e.g. \"@all\", \"@hilde\") " +
-      "or the conversation of `message_id`. " +
-      "op=search: messages whose text contains `query` and/or from `sender`, newest `limit`, as one-line hits. " +
-      "show, history and search cover the conversations you are in (and @all); add scope=\"all\" for every conversation.",
-    parameters: z.object({
-      op: z
-        .enum(["reply", "write", "send", "set", "inbox", "show", "history", "search"])
-        .describe("reply/write/send a message, set a setting, or read: inbox, show, history, search"),
-      message_id: z.number().optional().describe("a message's #number (reply, show, history)"),
-      to: z.string().optional().describe('"@all", "@id" or "@{id1,id2}" (write/send, history)'),
-      message: z.string().optional().describe("message text (reply/write; optional caption for send)"),
-      files: z.array(z.string()).optional().describe("file paths, relative to the project folder or absolute (optional for reply and write)"),
-      key: z.string().optional().describe("setting name (set)"),
-      value: z.string().optional().describe("setting value (set)"),
-      query: z.string().optional().describe("text to find, case-insensitive (search)"),
-      sender: z.string().optional().describe("only messages from this id (search)"),
-      since: z.number().optional().describe("only messages after this #number (inbox)"),
-      limit: z.number().optional().describe("how many messages, default 20, at most 100 (inbox, history, search)"),
-      scope: z.enum(["mine", "all"]).optional().describe('"mine" (default): your conversations and @all; "all": every conversation'),
+    description: toolDescription({
+      arrives: "after your current tool call finishes, and they end a running `wait`",
+      notJoining: "sessions started in the temp directory do not join",
     }),
+    parameters: zodParameters(pi.zod),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const conn = connection;
-      if (!conn) {
+      if (!tool) {
         throw new Error("This session is not on the message bus: subagents and sessions started in the temp directory do not join.");
       }
-      // omp passes arguments outside the schema through; ignoring them once stored an empty reply (`content` for `message`).
-      const unknown = Object.keys(params).filter((key) => !TOOL_ARGS.includes(key));
-      if (unknown.length > 0) {
-        throw new Error(`Unknown argument${unknown.length > 1 ? "s" : ""} ${unknown.join(", ")}; the arguments are ${TOOL_ARGS.join(", ")}. Nothing was sent.`);
-      }
-      const result = (out: string): ToolResult => ({ content: [{ type: "text", text: `${out} (you are @${conn.id})` }] });
-      const upload = async (files: string[]): Promise<FileRef[]> => {
-        const refs: FileRef[] = [];
-        for (const file of files) refs.push(await conn.uploadFile(path.resolve(ctx.cwd, file)));
-        return refs;
-      };
-      /** "text 812 chars, 2 files: a.patch, b.py" — what the bus stored, so a wrong argument shows at once. */
-      const contents = (res: PostMessageResponse): string => {
-        const files = res.message.files;
-        const text = res.message.text.length > 0 ? `text ${res.message.text.length} chars` : "no text";
-        return files.length > 0 ? `${text}, ${files.length} file${files.length === 1 ? "" : "s"}: ${files.map((f) => f.name).join(", ")}` : text;
-      };
-      const sent = async (what: string, res: PostMessageResponse): Promise<ToolResult> =>
-        result(`${what} (conversation ${res.conversation.id}, message #${res.message.seq}): ${contents(res)}; ${await deliveryStatus(conn, res)}.`);
-
-      /** Messages of a read result, newest kept when the page is too large. */
-      const listed = (res: ReadResponse, what: string): string => {
-        const byId = new Map(res.conversations.map((c) => [c.id, c]));
-        const entries = res.messages.map((m) => formatReadMessage(m, byId.get(m.conversationId), READ_TEXT_CHARS));
-        const { text, dropped } = withinBudget(entries, "\n\n");
-        return `${res.messages.length} ${what}${dropped ? ` (${dropped} older ones left out; use a smaller limit)` : ""}:\n\n${text}\n`;
-      };
-      switch (params.op) {
-        case "reply": {
-          if (params.message_id === undefined || (!params.message && !params.files?.length)) {
-            throw new Error("reply needs `message_id` and `message` (or `files`).");
-          }
-          const refs = await upload(params.files ?? []);
-          const res = await conn.write({ replyToSeq: params.message_id }, params.message ?? "", refs.map((r) => r.id));
-          return sent(`Replied to #${params.message_id}`, res);
-        }
-        case "write": {
-          if (!params.to || (!params.message && !params.files?.length)) throw new Error("write needs `to` and `message` (or `files`).");
-          const refs = await upload(params.files ?? []);
-          return sent(`Sent to ${params.to}`, await conn.write({ to: params.to }, params.message ?? "", refs.map((r) => r.id)));
-        }
-        case "send": {
-          if (!params.to || !params.files?.length) throw new Error("send needs `to` and `files`.");
-          const refs = await upload(params.files);
-          const res = await conn.write({ to: params.to }, params.message ?? "", refs.map((r) => r.id));
-          return sent(`Sent to ${params.to}`, res);
-        }
-        case "set": {
-          if (!params.key || params.value === undefined) throw new Error("set needs `key` and `value`.");
-          const res = await conn.set(params.key, params.value);
-          return result(`Settings now: ${JSON.stringify(res.participant.settings)}.`);
-        }
-        case "inbox": {
-          const res = await conn.inbox(params.since ?? 0, params.limit ?? 20);
-          if (res.messages.length === 0) return result(`No messages for you${params.since ? ` after #${params.since}` : ""}.`);
-          return result(listed(res, "messages sent to you"));
-        }
-        case "show": {
-          if (params.message_id === undefined) throw new Error("show needs `message_id`.");
-          const { message, conversation } = await conn.message(params.message_id);
-          if (params.scope !== "all" && conversation.kind === "group" && !conversation.members.includes(conn.id ?? "")) {
-            throw new Error(`#${message.seq} is in a conversation you are not in (${formatAddress(conversation.members)}); add scope "all" to read it.`);
-          }
-          const saved: string[] = [];
-          if (message.files.length > 0) {
-            const dir = path.join(os.homedir(), ".agent-bus", "received", conn.id ?? "");
-            for (const file of message.files) saved.push(await conn.downloadFile(file, dir));
-          }
-          return result(formatReadMessage(message, conversation, Number.MAX_SAFE_INTEGER, saved));
-        }
-        case "history": {
-          let target: { to: string } | { conversationId: string };
-          if (params.to) target = { to: params.to };
-          else if (params.message_id !== undefined) target = { conversationId: (await conn.message(params.message_id)).message.conversationId };
-          else throw new Error("history needs `to` (an address) or `message_id` (that message's conversation).");
-          const res = await conn.history(target, params.limit ?? 20, params.scope === "all");
-          if (res.messages.length === 0) return result("No messages in that conversation yet.");
-          return result(listed(res, "messages, oldest first"));
-        }
-        case "search": {
-          if (!params.query?.trim() && !params.sender) throw new Error("search needs `query` and/or `sender`.");
-          const res = await conn.search(params.query ?? "", params.sender, params.limit ?? 20, params.scope === "all");
-          if (res.messages.length === 0) return result("No matching messages.");
-          const byId = new Map(res.conversations.map((c) => [c.id, c]));
-          const hits = res.messages.map((m) => formatSearchHit(m, byId.get(m.conversationId), params.query ?? ""));
-          const { text, dropped } = withinBudget(hits, "\n");
-          return result(`${res.messages.length} matching messages, oldest first${dropped ? ` (${dropped} older ones left out)` : ""}:\n${text}\n`);
-        }
-      }
+      return { content: [{ type: "text", text: await tool.run(params, ctx.cwd) }] };
     },
   });
 }

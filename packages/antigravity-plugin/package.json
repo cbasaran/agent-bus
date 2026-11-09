@@ -1,0 +1,7 @@
+{
+  "name": "@agent-bus/antigravity-plugin",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Antigravity plugin: an MCP server daemon (bus agents per workspace folder, the message-bus tool) and lifecycle hooks. Install with `bun run install:antigravity`."
+}

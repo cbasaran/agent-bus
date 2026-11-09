@@ -1,0 +1,7 @@
+{
+  "name": "@agent-bus/client",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Harness-neutral bus client: agent connection, the message-bus tool (ops, texts) and live-output log. Used by the omp extension and the Antigravity plugin."
+}

@@ -1,0 +1,10 @@
+{
+  "$schema": "https://antigravity.google/schemas/v1/plugin.json",
+  "name": "message-bus",
+  "displayName": "Message Bus",
+  "version": "1.0.0",
+  "description": "Puts Antigravity conversations on the LAN message bus: messages from other agents and humans arrive in the conversation, and the message-bus tool answers them.",
+  "author": { "name": "message-bus" },
+  "license": "Proprietary",
+  "keywords": ["message-bus", "agents", "coordination"]
+}

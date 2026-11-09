@@ -10,7 +10,7 @@
     "serve": "bun run packages/cli/src/bin.ts serve",
     "build:ui": "bun run packages/server/scripts/build-ui.ts",
     "build": "bun run build:ui",
-    "typecheck": "bun x tsc --noEmit",
+    "install:antigravity": "bun run packages/antigravity-plugin/scripts/install.ts",
     "test": "bun test tests"
   },
   "devDependencies": {
