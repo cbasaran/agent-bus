@@ -665,6 +665,15 @@ button:disabled {
   background: var(--panel);
 }
 
+/* The chat column (messages and the message box) is at most 80 characters of message text wide;
+   43px = a message's side padding (2 × 20px) and its 3px left border. */
+.message-list,
+.load-earlier,
+.message-empty,
+.composer > * {
+  max-width: calc(80ch + 43px);
+}
+
 .conv-header {
   padding: 12px 20px;
   border-bottom: 1px solid var(--border);
