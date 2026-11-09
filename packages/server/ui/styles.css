@@ -80,8 +80,10 @@ button:disabled {
     "side main";
 }
 
+/* With a document open, the conversation is only as wide as its column (plus the chat box's 2 × 20px margin)
+   and the document takes the rest; when space runs out the conversation narrows first. */
 .app.with-doc {
-  grid-template-columns: 280px minmax(0, 1fr) minmax(360px, 42%);
+  grid-template-columns: 280px minmax(0, calc(var(--column) + 40px)) minmax(360px, 1fr);
   grid-template-areas:
     "top top top"
     "side main doc";
@@ -664,17 +666,19 @@ button:disabled {
   flex-direction: column;
   min-height: 0;
   background: var(--panel);
-  /* See @property --column below. */
-  --column: calc(80ch + 45px);
 }
 
 /* One column width for the agent panel (live output) and the chat box: 80 characters of message text,
    plus a message's side padding (2 × 20px), its 3px left border and the box's borders (2 × 1px).
-   Registered as a length so `ch` is resolved on .main, at the message font, not at each box's own font size. */
+   Registered as a length so `ch` is resolved once on .app, at the message font, not at each box's own font size. */
 @property --column {
   syntax: "<length>";
   inherits: true;
   initial-value: 0px;
+}
+
+.app {
+  --column: calc(80ch + 45px);
 }
 
 .chat {
