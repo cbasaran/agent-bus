@@ -26,6 +26,12 @@ export class FolderAgent {
   /** The folder's most recently active main conversation: bus messages that wake the agent go there. */
   conversationId: string | undefined;
   private transcriptPath: string | undefined;
+
+  /** The active conversation's full transcript, when known. */
+  get transcript(): string | undefined {
+    return this.transcriptPath;
+  }
+
   /** Texts for the next model call of any of the folder's conversations: quiet messages, receipt notices, retries. */
   private readonly queued: Array<{ text: string; seq?: number }> = [];
   /** Seqs put into a conversation with agentapi, seen at its next model call. */

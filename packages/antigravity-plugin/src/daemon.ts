@@ -2,7 +2,7 @@
 // app quits. It serves the `message-bus` tool over MCP (stdio), keeps one bus agent per workspace folder that has a
 // main conversation (FolderAgent), and answers the plugin's hooks over a local socket, which is how it learns which
 // conversation is active, busy or idle, and which conversation a tool call comes from.
-import { existsSync, mkdirSync, readFileSync, realpathSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import * as path from "node:path";
 import { createInterface } from "node:readline";
@@ -49,11 +49,68 @@ interface ConversationInfo {
   subagent: boolean;
 }
 
+/** Folders whose main conversation was active this recently are rejoined when the daemon starts. */
+const REJOIN_WITHIN_MS = 7 * 24 * 3600_000;
+/** A folder's "last active" time is saved at most this often while its conversation stays the same. */
+const REMEMBER_EVERY_MS = 3600_000;
+
+/** Saved per folder: its latest main conversation, so the folder is back on the bus after a restart. */
+interface Remembered {
+  conversationId: string;
+  transcriptPath?: string;
+  at: number;
+}
+
 export class Daemon {
   private readonly agents = new Map<string, FolderAgent>();
   private readonly conversations = new Map<string, Promise<ConversationInfo>>();
   private readonly agentApi = new AgentApi();
+  private readonly remembered: Record<string, Remembered> = {};
   readonly url = busUrl();
+
+  /**
+   * `stateFile` keeps each folder's latest conversation: Antigravity runs no hook for a conversation until it does
+   * something, so without it an idle conversation would be off the bus after every app (or daemon) restart.
+   */
+  constructor(private readonly stateFile?: string) {
+    if (stateFile) this.restore(stateFile);
+  }
+
+  private restore(stateFile: string): void {
+    let saved: Record<string, Remembered> = {};
+    try {
+      saved = JSON.parse(readFileSync(stateFile, "utf8")) as Record<string, Remembered>;
+    } catch {
+      return;
+    }
+    for (const [folder, entry] of Object.entries(saved)) {
+      if (Date.now() - entry.at > REJOIN_WITHIN_MS || !existsSync(folder)) continue;
+      if (entry.transcriptPath && !existsSync(entry.transcriptPath)) continue; // conversation deleted
+      this.remembered[folder] = entry;
+      this.conversations.set(entry.conversationId, Promise.resolve({ folder, subagent: false }));
+      this.newAgent(folder).activate(entry.conversationId, entry.transcriptPath);
+    }
+  }
+
+  private newAgent(folder: string): FolderAgent {
+    const agent = new FolderAgent({ folder, busUrl: this.url, agentApi: this.agentApi, log });
+    this.agents.set(folder, agent);
+    return agent;
+  }
+
+  /** Saves the folder's active conversation when it changes (and its last-active time, hourly). */
+  private remember(agent: FolderAgent): void {
+    if (!this.stateFile || !agent.conversationId) return;
+    const before = this.remembered[agent.folder];
+    if (before?.conversationId === agent.conversationId && Date.now() - before.at < REMEMBER_EVERY_MS) return;
+    this.remembered[agent.folder] = { conversationId: agent.conversationId, transcriptPath: agent.transcript, at: Date.now() };
+    try {
+      mkdirSync(path.dirname(this.stateFile), { recursive: true });
+      writeFileSync(this.stateFile, `${JSON.stringify(this.remembered, null, 2)}\n`);
+    } catch (err) {
+      log(`could not save ${this.stateFile}: ${(err as Error).message}`);
+    }
+  }
 
   /** Folder of a conversation's first workspace, unless it is in the temp directory. */
   private static folderOf(payload: HookPayload): string | undefined {
@@ -88,12 +145,7 @@ export class Daemon {
   private async agentFor(conversationId: string, payload: HookPayload): Promise<FolderAgent | undefined> {
     const { folder, subagent } = await this.info(conversationId, payload);
     if (subagent || !folder) return undefined;
-    let agent = this.agents.get(folder);
-    if (!agent) {
-      agent = new FolderAgent({ folder, busUrl: this.url, agentApi: this.agentApi, log });
-      this.agents.set(folder, agent);
-    }
-    return agent;
+    return this.agents.get(folder) ?? this.newAgent(folder);
   }
 
   /** Answers one hook. Failures answer as if the plugin were absent (hooks must never block Antigravity). */
@@ -104,13 +156,18 @@ export class Daemon {
     const agent = await this.agentFor(conversationId, payload);
     switch (event) {
       case "SessionStart":
-        agent?.activate(conversationId, payload.transcriptPath);
+        if (agent) {
+          agent.activate(conversationId, payload.transcriptPath);
+          this.remember(agent);
+        }
         return neutral;
       case "PreInvocation": {
         if (!agent) return neutral;
         agent.activate(conversationId, payload.transcriptPath);
+        this.remember(agent);
         const text = agent.beforeModelCall(conversationId);
-        return text ? { injectSteps: [{ systemMessage: { systemMessage: text, metadata: { source: TOOL_NAME } } }] } : neutral;
+        // A userMessage: Antigravity (2.30) does not show the model a systemMessage returned here (tested 9 Nov).
+        return text ? { injectSteps: [{ userMessage: text }] } : neutral;
       }
       case "PreToolUse": {
         const call = payload.toolCall;
@@ -261,8 +318,8 @@ function serveHooks(daemon: Daemon, socketPath: string): ReturnType<typeof creat
 }
 
 export function main(): void {
-  const daemon = new Daemon();
   const socketPath = daemonSocketPath(appDataDir());
+  const daemon = new Daemon(path.join(path.dirname(socketPath), "agents.json"));
   const hooks = serveHooks(daemon, socketPath);
   let ended = false;
   const shutdown = (): void => {

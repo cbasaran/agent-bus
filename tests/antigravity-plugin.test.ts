@@ -127,6 +127,24 @@ test("a wake message goes into the folder's latest conversation and counts as se
   await until(async () => (await message(hello.seq)).receipts[0]?.seenAt !== null);
 });
 
+test("after a daemon restart, an idle conversation's folder is back on the bus and still gets its messages", async () => {
+  const stateFile = path.join(dataDir, "agents.json");
+  daemon = new Daemon(stateFile);
+  await daemon.hook("PreInvocation", payload("c1", "alpha"));
+  await until(async () => (await participant("alpha"))?.online);
+  daemon.close();
+  // An agent that never took part is forgotten when it goes offline.
+  await until(async () => !(await participant("alpha"))?.online);
+
+  // Antigravity restarts the daemon; the conversation runs no hook until it does something.
+  daemon = new Daemon(stateFile);
+  await until(async () => (await participant("alpha"))?.online);
+  await post({ from: "can", to: "@alpha", text: "still there?" });
+  const [conversation, content] = await until(() => sent()[0]);
+  expect(conversation).toBe("c1");
+  expect(content).toContain("still there?");
+});
+
 test("quiet @all messages from agents ride along with the next model call (no turn started) and are seen then", async () => {
   daemon = new Daemon();
   await daemon.hook("SessionStart", payload("c1", "alpha"));
@@ -136,9 +154,9 @@ test("quiet @all messages from agents ride along with the next model call (no tu
   await until(async () => (await message(note.seq)).receipts.find((r) => r.to === "alpha")?.deliveredAt);
 
   const answer = (await daemon.hook("PreInvocation", payload("c1", "alpha"))) as {
-    injectSteps?: Array<{ systemMessage: { systemMessage: string } }>;
+    injectSteps?: Array<{ userMessage: string }>;
   };
-  expect(answer.injectSteps?.[0]?.systemMessage.systemMessage).toContain("GPU 2 released");
+  expect(answer.injectSteps?.[0]?.userMessage).toContain("GPU 2 released");
   expect(sent()).toEqual([]);
   await until(async () => (await message(note.seq)).receipts.find((r) => r.to === "alpha")?.seenAt);
   // Given once only.
