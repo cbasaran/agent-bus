@@ -1218,7 +1218,7 @@ function renderMessage(message: Message, continued: boolean): HTMLLIElement {
   const time = h("time", "msg-time", timeFormat.format(message.createdAt));
   time.dateTime = new Date(message.createdAt).toISOString();
   time.title = fullFormat.format(message.createdAt);
-  head.append(time);
+  head.append(h("span", "msg-seq", `#${message.seq}`), time);
   const replyBtn = h("button", "msg-reply-btn", "↩ Reply");
   replyBtn.type = "button";
   replyBtn.title = "Reply to this message (quotes it)";

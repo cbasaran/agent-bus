@@ -833,6 +833,7 @@ button:disabled {
   background: var(--panel-raised);
 }
 
+.msg-seq,
 .msg-time {
   font-size: 12px;
   color: var(--muted);
