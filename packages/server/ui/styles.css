@@ -349,6 +349,7 @@ button:disabled {
 }
 
 .agent-panel {
+  max-width: var(--column);
   margin-top: 10px;
   padding: 10px 14px;
   border: 1px solid var(--border);
@@ -663,15 +664,29 @@ button:disabled {
   flex-direction: column;
   min-height: 0;
   background: var(--panel);
+  /* See @property --column below. */
+  --column: calc(80ch + 45px);
 }
 
-/* The chat column (messages and the message box) is at most 80 characters of message text wide;
-   43px = a message's side padding (2 × 20px) and its 3px left border. */
-.message-list,
-.load-earlier,
-.message-empty,
-.composer > * {
-  max-width: calc(80ch + 43px);
+/* One column width for the agent panel (live output) and the chat box: 80 characters of message text,
+   plus a message's side padding (2 × 20px), its 3px left border and the box's borders (2 × 1px).
+   Registered as a length so `ch` is resolved on .main, at the message font, not at each box's own font size. */
+@property --column {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 0px;
+}
+
+.chat {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  max-width: var(--column);
+  margin: 12px 20px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-raised);
 }
 
 .conv-header {
@@ -1151,7 +1166,7 @@ ul.md-list ul.md-list { list-style: circle; }
 .composer {
   border-top: 1px solid var(--border);
   padding: 10px 16px 14px;
-  background: var(--panel);
+  background: transparent;
 }
 
 .composer-error {
@@ -1564,8 +1579,16 @@ ul.md-list ul.md-list { list-style: circle; }
     margin-top: auto;
   }
 
-  /* Message box: one compact row on the keyboard, [📎] [Message…] [➤]. */
-  .main > .composer {
+  /* The chat fills the screen: no box. Message box: one compact row on the keyboard, [📎] [Message…] [➤]. */
+  .chat {
+    max-width: none;
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+    background: var(--panel);
+  }
+
+  .composer {
     padding: 6px 8px;
   }
 
