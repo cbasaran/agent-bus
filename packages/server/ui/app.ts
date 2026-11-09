@@ -103,6 +103,7 @@ const dom = {
   lightboxImg: el<HTMLImageElement>("lightbox-img"),
   lightboxName: el<HTMLSpanElement>("lightbox-name"),
   lightboxDownload: el<HTMLAnchorElement>("lightbox-download"),
+  lightboxHint: el<HTMLSpanElement>("lightbox-hint"),
   app: el<HTMLDivElement>("app"),
   docPanel: el<HTMLElement>("doc-panel"),
   docTitle: el<HTMLSpanElement>("doc-title"),
@@ -1495,7 +1496,12 @@ function renderFile(file: FileRef): HTMLLIElement {
       li.classList.remove("msg-image");
     });
     preview.append(img);
-    preview.addEventListener("click", () => openLightbox(file, url));
+    previewFiles.set(preview, { file, url });
+    // The viewer steps through this message's images (those still previewed: unrenderable ones are gone).
+    preview.addEventListener("click", () => {
+      const all = [...(preview.closest(".msg")?.querySelectorAll<HTMLElement>(".image-preview") ?? [preview])];
+      openLightbox(all.flatMap((p) => previewFiles.get(p) ?? []), Math.max(0, all.indexOf(preview)));
+    });
     li.append(preview);
   }
   li.append(row);
@@ -1552,20 +1558,48 @@ document.addEventListener("keydown", (event) => {
   closeDoc();
 });
 
-function openLightbox(file: FileRef, url: string): void {
+/** File behind each image preview, for the viewer. */
+const previewFiles = new WeakMap<HTMLElement, { file: FileRef; url: string }>();
+
+/** The images the viewer steps through with ← and → (one message's), and the one shown. */
+let lightboxImages: Array<{ file: FileRef; url: string }> = [];
+let lightboxIndex = 0;
+
+function openLightbox(images: Array<{ file: FileRef; url: string }>, index: number): void {
+  lightboxImages = images;
+  showLightboxImage(index);
+  if (!dom.lightbox.open) dom.lightbox.showModal();
+}
+
+function showLightboxImage(index: number): void {
+  const image = lightboxImages[index];
+  if (!image) return;
+  lightboxIndex = index;
+  const { file, url } = image;
   dom.lightboxImg.src = url;
   dom.lightboxImg.alt = file.name;
-  dom.lightboxName.textContent = `${file.name} · ${formatBytes(file.size)}`;
+  const position = lightboxImages.length > 1 ? `${index + 1} / ${lightboxImages.length} · ` : "";
+  dom.lightboxName.textContent = `${position}${file.name} · ${formatBytes(file.size)}`;
   dom.lightboxDownload.href = url;
   dom.lightboxDownload.download = file.name;
-  dom.lightbox.showModal();
+  dom.lightboxHint.textContent = lightboxImages.length > 1 ? "← → for the others · click or Esc to close" : "click or Esc to close";
 }
+
+dom.lightbox.addEventListener("keydown", (event) => {
+  if (event.key === "ArrowRight" || event.key === "ArrowLeft") {
+    event.preventDefault();
+    showLightboxImage(lightboxIndex + (event.key === "ArrowRight" ? 1 : -1));
+  }
+});
 
 // Any click closes it, except on the download link.
 dom.lightbox.addEventListener("click", (event) => {
   if (event.target !== dom.lightboxDownload) dom.lightbox.close();
 });
-dom.lightbox.addEventListener("close", () => dom.lightboxImg.removeAttribute("src"));
+dom.lightbox.addEventListener("close", () => {
+  dom.lightboxImg.removeAttribute("src");
+  lightboxImages = [];
+});
 
 function nearBottom(): boolean {
   const s = dom.messageScroll;
