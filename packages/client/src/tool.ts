@@ -264,7 +264,8 @@ export function formatSchedule(res: ResourcesResponse, only?: string): string {
     for (const p of observed?.processes ?? []) {
       const who = p.agentId ? `@${p.agentId}` : p.container ? `container ${p.container}` : `pid ${p.pid}`;
       const what = p.container && p.agentId ? ` container ${p.container}` : ` ${p.command.slice(0, 50)}`;
-      lines.push(`  runs: ${who}${what}, ${formatAmount(p.memory, resource)}${p.reservationId ? ` (${p.reservationId})` : ""}`);
+      const tag = p.reservationId ? ` (${p.reservationId})` : p.assumed ? " (no label; assumed theirs, the only booking)" : "";
+      lines.push(`  runs: ${who}${what}, ${formatAmount(p.memory, resource)}${tag}`);
     }
   }
   const warnings = res.warnings.filter((w) => resources.some((r) => r.id === w.resourceId));

@@ -66,6 +66,8 @@ export interface ObservedProcess {
   reservationId?: string;
   /** The agent whose project folder the process runs in (or the reservation's holder). */
   agentId?: string;
+  /** agentId is presumed: the process carries no label, and its GPU is booked whole by that one holder. */
+  assumed?: boolean;
 }
 
 export interface ObservedGpu {

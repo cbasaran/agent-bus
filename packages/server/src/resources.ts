@@ -544,6 +544,18 @@ export class ResourceSchedule {
           if (agentId) process.agentId = agentId;
           return process;
         });
+      // A GPU booked whole by exactly one holder: its unlabeled processes are presumed theirs (servers started
+      // before the rule, containers without a label), so the hold is not called idle and the use not unclaimed.
+      const whole = [...open.values()].filter(
+        (row) => row.resource_id === id && row.amount === null && row.start_at !== null && row.start_at <= now
+      );
+      if (whole.length === 1) {
+        for (const p of processes) {
+          if (p.reservationId || p.agentId) continue;
+          p.agentId = whole[0]?.holder;
+          p.assumed = true;
+        }
+      }
       gpus.push({ resourceId: id, memoryUsed: gpu.memoryUsed, utilization: gpu.utilization, processes });
       // Who is using it: a reservation named by its processes, or a holder whose folder they run in.
       for (const row of open.values()) {

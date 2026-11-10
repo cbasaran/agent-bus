@@ -169,6 +169,26 @@ test("processes are attributed by reservation, label or folder; the rest of real
   expect(unclaimed.join("\n")).toContain("v3-gemma");
 });
 
+test("an unlabeled server on a GPU booked whole by one holder counts as theirs: not unclaimed, not idle; not when shared", () => {
+  const a = schedule.reserve({ from: "alpha", resource: "bariton GPU 2", hours: 8, purpose: "server started before the rule" }, ALPHA);
+  for (let i = 0; i < 4; i++) {
+    t += 15 * MIN;
+    schedule.observe(observation([process({ pid: 9, container: "v3-gemma4-31b" })]));
+    schedule.tick();
+  }
+  let listing = schedule.listing();
+  expect(listing.reservations.find((r) => r.id === a.id)?.idleSince).toBeUndefined();
+  expect(listing.warnings.filter((w) => w.kind === "unclaimed")).toEqual([]);
+  expect(listing.observed["bariton/gpu/GPU-aaaa1111"]?.processes[0]).toMatchObject({ agentId: "alpha", assumed: true });
+  // Two holders sharing the GPU by memory: nobody is presumed, the container is unclaimed again.
+  schedule.release(a.id, ALPHA);
+  schedule.reserve({ from: "alpha", resource: "bariton GPU 2", hours: 1, amount: 20_000, purpose: "a" }, ALPHA);
+  schedule.reserve({ from: "beta", resource: "bariton GPU 2", hours: 1, amount: 20_000, purpose: "b" }, BETA);
+  schedule.observe(observation([process({ pid: 9, container: "v3-gemma4-31b" })]));
+  listing = schedule.listing();
+  expect(listing.warnings.filter((w) => w.kind === "unclaimed")).toHaveLength(1);
+});
+
 test("extend: the holder while using it (not while idle), up to 48 h from now; release: the holder or a human", () => {
   const a = schedule.reserve({ from: "alpha", resource: "bariton GPU 2", hours: 1, purpose: "run" }, ALPHA);
   schedule.observe(observation([process({ cwd: "/home/x/code/alpha" })]));
