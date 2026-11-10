@@ -214,10 +214,18 @@ export class HumanAuth {
     return { human: entry.human, token: this.newSession(entry.human, label) };
   }
 
-  /** PublicKeyCredentialRequestOptions: discoverable credentials, so no name is typed. */
-  loginOptions(): Record<string, unknown> {
+  /**
+   * PublicKeyCredentialRequestOptions. With `human` (the website's profile), the request names that human's
+   * passkeys: Chrome on a Mac finds passkeys in its own profile only when they are named, and otherwise offers just a
+   * phone (QR code) or a security key. Without it: discoverable credentials, any passkey for this bus.
+   */
+  loginOptions(human?: string): Record<string, unknown> {
     const challenge = this.newChallenge({ kind: "login", expires: this.now() + CHALLENGE_MS });
-    return { challenge, rpId: this.options.rpId, userVerification: "preferred", timeout: CHALLENGE_MS, allowCredentials: [] };
+    const ids = human
+      ? this.db.query<{ id: string }, [string]>("SELECT id FROM auth_credentials WHERE human = ?1").all(human).map((r) => r.id)
+      : [];
+    const allowCredentials = ids.map((id) => ({ type: "public-key", id, transports: ["internal", "hybrid"] }));
+    return { challenge, rpId: this.options.rpId, userVerification: "preferred", timeout: CHALLENGE_MS, allowCredentials };
   }
 
   loginVerify(body: { credential?: { id?: unknown; response?: Record<string, unknown> } }, label: string): { human: string; token: string } {

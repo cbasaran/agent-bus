@@ -67,9 +67,23 @@ async function enroll(invite: string): Promise<void> {
 }
 
 async function signIn(): Promise<void> {
-  const o = await api<{ challenge: string; rpId: string; userVerification: UserVerificationRequirement; timeout: number }>("/api/auth/login/options", {});
+  // The profile picked on the conversations page: its passkeys are named in the request (see loginOptions).
+  const human = localStorage.getItem("agent-bus.profile") ?? undefined;
+  const o = await api<{
+    challenge: string;
+    rpId: string;
+    userVerification: UserVerificationRequirement;
+    timeout: number;
+    allowCredentials: Array<{ type: "public-key"; id: string; transports: AuthenticatorTransport[] }>;
+  }>("/api/auth/login/options", { human });
   const credential = (await navigator.credentials.get({
-    publicKey: { challenge: fromB64url(o.challenge), rpId: o.rpId, userVerification: o.userVerification, timeout: o.timeout, allowCredentials: [] },
+    publicKey: {
+      challenge: fromB64url(o.challenge),
+      rpId: o.rpId,
+      userVerification: o.userVerification,
+      timeout: o.timeout,
+      allowCredentials: o.allowCredentials.map((c) => ({ ...c, id: fromB64url(c.id) })),
+    },
   })) as PublicKeyCredential | null;
   if (!credential) throw new Error("No passkey was chosen");
   const response = credential.response as AuthenticatorAssertionResponse;

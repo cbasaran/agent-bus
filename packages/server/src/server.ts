@@ -513,7 +513,10 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
       const result = auth.registerVerify(await readJsonObject(req), deviceLabel(req));
       return json({ human: result.human, session: result.token });
     }
-    if (method === "POST" && pathname === "/api/auth/login/options") return json(auth.loginOptions());
+    if (method === "POST" && pathname === "/api/auth/login/options") {
+      const body = await readJsonObject(req);
+      return json(auth.loginOptions(typeof body.human === "string" ? body.human.trim().toLowerCase() : undefined));
+    }
     if (method === "POST" && pathname === "/api/auth/login/verify") {
       const result = auth.loginVerify(await readJsonObject(req), deviceLabel(req));
       return json({ human: result.human, session: result.token });
