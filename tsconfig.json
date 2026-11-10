@@ -8,6 +8,7 @@
     "packages/cli/src/**/*.ts",
     "packages/client/src/**/*.ts",
     "packages/omp-extension/src/**/*.ts",
+    "packages/pi-extension/src/**/*.ts",
     "packages/antigravity-plugin/src/**/*.ts",
     "packages/antigravity-plugin/scripts/**/*.ts",
     "packages/claude-plugin/src/**/*.ts",

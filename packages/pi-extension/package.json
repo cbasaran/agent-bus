@@ -1,0 +1,11 @@
+{
+  "name": "@agent-bus/pi-extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "pi extension: the session joins the bus as its project folder and gets the message-bus tool. Load it with ~/.pi/agent/extensions/agent-bus.ts (see PROJECT.md).",
+  "main": "./src/index.ts",
+  "pi": {
+    "extensions": ["./src/index.ts"]
+  }
+}
