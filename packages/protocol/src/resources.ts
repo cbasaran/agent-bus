@@ -46,6 +46,12 @@ export interface Reservation {
   createdBy: string;
   createdAt: number;
   approvedBy?: string;
+  /**
+   * Set by the holder when nobody else should send requests to what runs on it (timing runs, scored runs that must
+   * not batch with other traffic, a config change). Absent: shared, the default (Can, #4133): anyone may use the
+   * holder's servers for light use; the holder picks the model and its configuration.
+   */
+  private?: boolean;
   state: ReservationState;
   /** Active and no process of the holder seen on the resource for a while (only for observed resources). */
   idleSince?: number;
@@ -68,6 +74,10 @@ export interface ObservedProcess {
   agentId?: string;
   /** agentId is presumed: the process carries no label, and its GPU is booked whole by that one holder. */
   assumed?: boolean;
+  /** For a serving process (from gpudash): the model it serves, its engine, and where to send requests. */
+  model?: string;
+  engine?: string;
+  endpoints?: string[];
 }
 
 export interface ObservedGpu {
@@ -100,6 +110,9 @@ export interface Observation {
     container?: string;
     containerLabels?: Record<string, string>;
     reservationEnv?: string;
+    model?: string;
+    engine?: string;
+    endpoints?: string[];
   }>;
 }
 
@@ -127,7 +140,6 @@ export interface ResourcesResponse {
 /** The anti-greed rules in force (all in ms). */
 export interface ScheduleRules {
   maxHoldMs: number;
-  maxAheadMs: number;
   overdueGraceMs: number;
   idleAfterMs: number;
   reclaimAfterMs: number;
@@ -146,6 +158,8 @@ export interface ReserveRequest {
   purpose: string;
   /** Humans: book even when it does not fit (recorded as a conflict). */
   force?: boolean;
+  /** Private from the start; default shared. */
+  private?: boolean;
 }
 
 export interface ReservationResponse {

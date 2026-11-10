@@ -1016,13 +1016,18 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
       const reservation = schedule.reserve(body as unknown as ReserveRequest, actor);
       return json({ reservation, resource: schedule.resolve(reservation.resourceId) });
     }
-    const reservationMatch = /^\/api\/reservations\/([^/]+)\/(release|extend)$/.exec(pathname);
+    const reservationMatch = /^\/api\/reservations\/([^/]+)\/(release|extend|mode)$/.exec(pathname);
     if (method === "POST" && reservationMatch?.[1]) {
       const body = await readJsonObject(req);
       const actor = actorOf(body);
       const id = decodeURIComponent(reservationMatch[1]);
       if (reservationMatch[2] === "release") {
         const reservation = id === "current" && typeof body.resource === "string" ? schedule.releaseOn(body.resource, actor) : schedule.release(id, actor);
+        return json({ reservation, resource: schedule.resolve(reservation.resourceId) });
+      }
+      if (reservationMatch[2] === "mode") {
+        if (body.mode !== "shared" && body.mode !== "private") throw new HttpError(400, 'mode must be "shared" or "private"');
+        const reservation = schedule.setPrivate(id, body.mode === "private", actor);
         return json({ reservation, resource: schedule.resolve(reservation.resourceId) });
       }
       if (typeof body.hours !== "number") throw new HttpError(400, "hours must be a number");

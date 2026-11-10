@@ -32,7 +32,6 @@ const MIN = 60_000;
 
 export const DEFAULT_RULES: ScheduleRules = {
   maxHoldMs: 48 * HOUR,
-  maxAheadMs: 24 * HOUR,
   overdueGraceMs: 30 * MIN,
   idleAfterMs: 30 * MIN,
   reclaimAfterMs: 2 * HOUR,
@@ -72,6 +71,7 @@ CREATE TABLE IF NOT EXISTS reservations (
   created_at INTEGER NOT NULL,
   approved_by TEXT,
   forced INTEGER NOT NULL DEFAULT 0,
+  private INTEGER NOT NULL DEFAULT 0,
   ended_at INTEGER,
   end_reason TEXT,
   last_used_at INTEGER,
@@ -112,6 +112,7 @@ interface ReservationRow {
   created_at: number;
   approved_by: string | null;
   forced: number;
+  private: number;
   ended_at: number | null;
   end_reason: string | null;
   last_used_at: number | null;
@@ -186,6 +187,9 @@ export class ResourceSchedule {
     private readonly options: ScheduleOptions
   ) {
     this.db.exec(SCHEMA);
+    // Schedules created before shared/private (10 Nov) lack the column: their holds are shared.
+    const columns = this.db.query<{ name: string }, []>("PRAGMA table_info(reservations)").all();
+    if (!columns.some((c) => c.name === "private")) this.db.exec("ALTER TABLE reservations ADD COLUMN private INTEGER NOT NULL DEFAULT 0");
     this.now = options.now ?? Date.now;
     this.rules = { ...DEFAULT_RULES, ...options.rules };
   }
@@ -248,6 +252,7 @@ export class ResourceSchedule {
     if (row.start_at !== null) reservation.start = row.start_at;
     if (row.end_at !== null) reservation.end = row.end_at;
     if (row.approved_by) reservation.approvedBy = row.approved_by;
+    if (row.private) reservation.private = true;
     if (row.idle_since !== null) reservation.idleSince = row.idle_since;
     if (row.last_used_at !== null) reservation.lastUsedAt = row.last_used_at;
     if (row.ended_at !== null) reservation.endedAt = row.ended_at;
@@ -318,7 +323,7 @@ export class ResourceSchedule {
           kind: "unclaimed",
           resourceId,
           ...(p.agentId ? { agentId: p.agentId } : {}),
-          text: `${who}${p.container ? `container ${p.container}` : `pid ${p.pid} (${p.command.slice(0, 60)})`} uses ${Math.round(p.memory / 1024)} GB on ${label} without a reservation`,
+          text: `${who}${p.container ? `container ${p.container}` : `pid ${p.pid} (${p.command.slice(0, 60)})`} uses ${Math.round(p.memory / 1024)} GB on ${label} without a booking`,
         });
       }
     }
@@ -400,9 +405,6 @@ export class ResourceSchedule {
     const queued = input.start === "next";
     const start = queued ? now : typeof input.start === "number" ? input.start : now;
     if (!queued && start < now - MIN) throw new ScheduleError(400, "start is in the past");
-    if (start - now > this.rules.maxAheadMs) {
-      throw new ScheduleError(400, `start may be at most ${hours(this.rules.maxAheadMs)} ahead; queue with start "next" instead of booking far ahead`);
-    }
     const duration = input.hours !== undefined ? input.hours * HOUR : input.end !== undefined ? input.end - start : NaN;
     if (!Number.isFinite(duration) || duration <= 0) throw new ScheduleError(400, "give hours (or end)");
     if (duration > this.rules.maxHoldMs) {
@@ -423,10 +425,10 @@ export class ResourceSchedule {
     const startAt = queued && !fitsNow ? null : start;
     this.db
       .query(
-        `INSERT INTO reservations (id, resource_id, holder, amount, start_at, end_at, duration_ms, purpose, created_by, created_at, forced)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`
+        `INSERT INTO reservations (id, resource_id, holder, amount, start_at, end_at, duration_ms, purpose, created_by, created_at, forced, private)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)`
       )
-      .run(id, resource.id, actor.id, whole ? null : amount, startAt, startAt === null ? null : startAt + duration, duration, purpose.slice(0, 200), actor.id, now, forced ? 1 : 0);
+      .run(id, resource.id, actor.id, whole ? null : amount, startAt, startAt === null ? null : startAt + duration, duration, purpose.slice(0, 200), actor.id, now, forced ? 1 : 0, input.private ? 1 : 0);
     this.options.changed();
     return this.toReservation(this.getRow(id), now);
   }
@@ -465,6 +467,16 @@ export class ResourceSchedule {
     const any = row ?? this.openRows(resource.id).find((r) => r.holder === actor.id);
     if (!any) throw new ScheduleError(404, `@${actor.id} holds nothing on ${resource.label}`);
     return this.release(any.id, actor);
+  }
+
+  /** Shared (anyone may send requests to what runs on it) or private; the holder's call, or a human's. */
+  setPrivate(id: string, isPrivate: boolean, actor: Actor): Reservation {
+    const row = this.getRow(id);
+    if (row.ended_at !== null) throw new ScheduleError(409, `${id} is already over (${row.end_reason})`);
+    if (row.holder !== actor.id && actor.kind !== "human") throw new ScheduleError(403, `${id} is @${row.holder}'s`);
+    this.db.query("UPDATE reservations SET private = ?2 WHERE id = ?1").run(id, isPrivate ? 1 : 0);
+    this.options.changed();
+    return this.toReservation(this.getRow(id), this.now());
   }
 
   extend(id: string, hoursMore: number, actor: Actor): Reservation {
@@ -532,6 +544,9 @@ export class ResourceSchedule {
           const named = (p.reservationEnv || p.containerLabels?.["agent-bus.reservation"] || "").split(",").map((s) => s.trim()).filter(Boolean);
           const reservationId = named.find((r) => open.get(r)?.resource_id === id) ?? named[0];
           const process: ObservedProcess = { pid: p.pid, memory: p.memory, command: p.command.slice(0, 300) };
+          if (p.model) process.model = p.model;
+          if (p.engine) process.engine = p.engine;
+          if (p.endpoints?.length) process.endpoints = p.endpoints;
           // Containers run in their own root: their folder is the compose project's, when they come from one.
           const cwd = p.cwd || p.containerLabels?.["com.docker.compose.project.working_dir"];
           if (cwd) process.cwd = cwd;

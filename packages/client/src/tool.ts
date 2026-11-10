@@ -13,7 +13,21 @@ import type { BusConnection, Delivery } from "./connection";
 export const TOOL_NAME = "message-bus";
 
 export interface MessageBusToolParams {
-  op: "reply" | "write" | "send" | "set" | "inbox" | "show" | "history" | "search" | "resources" | "reserve" | "release" | "extend";
+  op:
+    | "reply"
+    | "write"
+    | "send"
+    | "set"
+    | "inbox"
+    | "show"
+    | "history"
+    | "search"
+    | "resources"
+    | "servers"
+    | "reserve"
+    | "release"
+    | "extend"
+    | "mode";
   message_id?: number;
   to?: string;
   message?: string;
@@ -31,6 +45,7 @@ export interface MessageBusToolParams {
   amount?: number;
   start?: string;
   purpose?: string;
+  mode?: "shared" | "private";
 }
 
 /** One tool parameter, for building a harness's schema (zod for omp, JSON schema for MCP). Only `op` is required. */
@@ -45,8 +60,9 @@ export const TOOL_PARAMS: readonly ToolParam[] = [
   {
     name: "op",
     type: "string",
-    enum: ["reply", "write", "send", "set", "inbox", "show", "history", "search", "resources", "reserve", "release", "extend"],
-    description: "reply/write/send a message, set a setting, read (inbox, show, history, search), or the resource schedule (resources, reserve, release, extend)",
+    enum: ["reply", "write", "send", "set", "inbox", "show", "history", "search", "resources", "servers", "reserve", "release", "extend", "mode"],
+    description:
+      "reply/write/send a message, set a setting, read (inbox, show, history, search), or shared GPUs (resources, servers, reserve, release, extend, mode)",
   },
   { name: "message_id", type: "number", description: "a message's #number (reply, show, history)" },
   { name: "to", type: "string", description: '"@all", "@id" or "@{id1,id2}" (write/send, history)' },
@@ -60,11 +76,12 @@ export const TOOL_PARAMS: readonly ToolParam[] = [
   { name: "limit", type: "number", description: "how many messages, default 20, at most 100 (inbox, history, search)" },
   { name: "scope", type: "string", enum: ["mine", "all"], description: '"mine" (default): your conversations and @all; "all": every conversation' },
   { name: "resource", type: "string", description: 'a resource: its label ("bariton GPU 2"), GPU uuid prefix or id (resources, reserve, release)' },
-  { name: "reservation", type: "string", description: "a reservation id, r_… (release, extend)" },
+  { name: "reservation", type: "string", description: "a reservation id, r_… (release, extend, mode)" },
   { name: "hours", type: "number", description: "how long (reserve) or how much longer from now (extend), at most 48" },
   { name: "amount", type: "number", description: "part of the resource (GPUs: GB of memory; services: slots); omit for all of it (reserve)" },
-  { name: "start", type: "string", description: 'reserve: omit for now, a UTC time ("2026-11-10 14:00Z", at most 24 h ahead), or "next" to queue until it is free' },
+  { name: "start", type: "string", description: 'reserve: omit for now, a UTC time ("2026-11-10 14:00Z"), or "next" to queue until it is free' },
   { name: "purpose", type: "string", description: "one line: what it is for (reserve)" },
+  { name: "mode", type: "string", enum: ["shared", "private"], description: '"shared" (default: others may send requests to your servers) or "private" (reserve, mode)' },
 ];
 
 /** Every argument the tool takes; anything else is rejected rather than silently ignored. */
@@ -102,12 +119,16 @@ export function toolDescription(harness: { arrives: string; notJoining: string }
     "or the conversation of `message_id`. " +
     "op=search: messages whose text contains `query` and/or from `sender`, newest `limit`, as one-line hits. " +
     "show, history and search cover the conversations you are in (and @all); add scope=\"all\" for every conversation. " +
-    "Shared GPUs, services and accounts (experimental; instead of claim/release messages): op=resources lists who holds " +
-    "what now and next, and what is actually running; op=reserve takes `resource`, `hours`, `purpose` (optional " +
-    "`amount`, `start`) and refuses when it does not fit, saying when it is free; start GPU jobs with " +
-    "`agent-bus run <reservation> -- <command>` so they run on exactly those GPUs and count as yours; op=release " +
-    "(`reservation` or `resource`) as soon as you are done; op=extend (`reservation`, `hours`) while you still use it. " +
-    "@resources writes to you when a hold is over, idle, or yours after a wait."
+    "Shared GPUs (experimental; instead of claim/release messages; shared by default): op=servers lists the model " +
+    "servers running now (model, URL, who runs it, shared or private): for light use just send requests to a shared " +
+    "one instead of starting your own; for sustained heavy use tell its owner first; leave private ones alone. " +
+    "op=resources lists who holds what now and next, and what runs. op=reserve takes `resource`, `hours`, `purpose` " +
+    "(optional `amount`, `start`, `mode`) and refuses when it does not fit, saying when it is free; book when you start, " +
+    "not ahead of time. The holder picks the model and its configuration; op=mode (`reservation`, `mode`) makes it " +
+    "private when nobody else should send requests (timing, scored runs; say so on the bus if others were using it). " +
+    "Start GPU jobs with `agent-bus run <reservation> -- <command>` so they run on exactly those GPUs and count as yours; " +
+    "op=release (`reservation` or `resource`) as soon as you are done; op=extend (`reservation`, `hours`) while you still " +
+    "use it. @resources writes to you when a hold is over, idle, or yours after a wait."
   );
 }
 
@@ -235,7 +256,7 @@ export function formatReservation(r: Reservation, resource: Resource): string {
     r.state === "queued"
       ? `queued for ${Math.round(r.durationMs / 360_000) / 10} h once free`
       : `${SHORT_TIME(r.start ?? 0)} – ${SHORT_TIME(r.end ?? 0)}`;
-  return `${r.id} @${r.holder} ${resource.label} (${part}), ${when}, ${r.state}: ${r.purpose}`;
+  return `${r.id} @${r.holder} ${resource.label} (${part}), ${when}, ${r.state}${r.private ? ", PRIVATE" : ", shared"}: ${r.purpose}`;
 }
 
 function runHint(res: ReservationResponse): string {
@@ -271,6 +292,28 @@ export function formatSchedule(res: ResourcesResponse, only?: string): string {
   const warnings = res.warnings.filter((w) => resources.some((r) => r.id === w.resourceId));
   if (warnings.length > 0) lines.push("Warnings:", ...warnings.map((w) => `  ${w.text}`));
   return lines.join("\n");
+}
+
+/**
+ * The model servers running now, for light use without starting one's own: model, engine, URL, where, and whose
+ * (the holder of the GPU it runs on; unbooked servers are shared by default).
+ */
+export function formatServers(res: ResourcesResponse): string {
+  const lines: string[] = [];
+  for (const resource of res.resources) {
+    const observed = res.observed[resource.id];
+    const holds = res.reservations.filter((r) => r.resourceId === resource.id && (r.state === "active" || r.state === "overdue"));
+    for (const p of observed?.processes ?? []) {
+      // Something you can send requests to: training runs and headless workers have no endpoint.
+      if (!p.endpoints?.length) continue;
+      const hold = holds.find((r) => r.id === p.reservationId) ?? holds.find((r) => r.holder === p.agentId) ?? (holds.length === 1 ? holds[0] : undefined);
+      const whose = hold
+        ? `@${hold.holder}'s, ${hold.private ? "PRIVATE: do not send requests" : `shared until ${SHORT_TIME(hold.end ?? 0)}`}`
+        : `unbooked, shared${p.agentId ? ` (run by @${p.agentId})` : p.container ? ` (container ${p.container})` : ""}`;
+      lines.push(`${p.model ?? "?"}${p.engine ? ` (${p.engine})` : ""} · ${p.endpoints.join(", ")} · ${resource.label} · ${whose}`);
+    }
+  }
+  return lines.length > 0 ? lines.join("\n") : "No model servers seen running.";
 }
 
 /** How long write/send wait for recipients' harnesses to accept the message before reporting (ms). */
@@ -390,6 +433,7 @@ export class BusTool {
           throw new Error("reserve needs `resource`, `hours` and `purpose`.");
         }
         const body: Record<string, unknown> = { resource: params.resource, hours: params.hours, purpose: params.purpose };
+        if (params.mode === "private") body.private = true;
         if (params.start !== undefined) body.start = parseStart(params.start);
         if (params.amount !== undefined) {
           // GPUs are booked in MiB; the model speaks GB.
@@ -405,6 +449,16 @@ export class BusTool {
           ? await conn.schedule(`/api/reservations/${encodeURIComponent(params.reservation)}/release`, {})
           : await conn.schedule("/api/reservations/current/release", { resource: params.resource });
         return result(`${res.reservation.state === "cancelled" ? "Cancelled" : "Released"}: ${formatReservation(res.reservation, res.resource)}.`);
+      }
+      case "servers": {
+        return result(formatServers(await conn.resources()));
+      }
+      case "mode": {
+        if (!params.reservation || (params.mode !== "shared" && params.mode !== "private")) {
+          throw new Error('mode needs `reservation` and `mode` ("shared" or "private").');
+        }
+        const res = await conn.schedule(`/api/reservations/${encodeURIComponent(params.reservation)}/mode`, { mode: params.mode });
+        return result(`Now ${params.mode}: ${formatReservation(res.reservation, res.resource)}.`);
       }
       case "extend": {
         if (!params.reservation || params.hours === undefined) throw new Error("extend needs `reservation` and `hours`.");

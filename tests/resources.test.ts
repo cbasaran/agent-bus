@@ -6,6 +6,7 @@ import path from "node:path";
 import type { Observation, ResourcesResponse } from "@agent-bus/protocol";
 import { createBusServer, type BusServerHandle } from "@agent-bus/server";
 import { checkTickets, ticketEnv } from "../packages/cli/src/run";
+import { formatServers } from "../packages/client/src/tool";
 import { ResourceSchedule, type Actor } from "../packages/server/src/resources";
 
 const HOUR = 3600_000;
@@ -63,12 +64,22 @@ test("a GPU is shared by memory until it is full; a refusal names the holder and
   expect(later.state).toBe("planned");
 });
 
-test("holds are bounded: at most 48 h, at most 24 h ahead, one planned or queued reservation per holder and resource", () => {
+test("holds are bounded: at most 48 h, one planned or queued reservation per holder and resource; any start ahead is fine", () => {
   expect(() => schedule.reserve({ from: "alpha", resource: "bariton GPU 2", hours: 49, purpose: "x" }, ALPHA)).toThrow(/at most 48 h/);
-  expect(() => schedule.reserve({ from: "alpha", resource: "bariton GPU 2", hours: 1, start: t + 25 * HOUR, purpose: "x" }, ALPHA)).toThrow(/at most 24 h ahead/);
-  schedule.reserve({ from: "alpha", resource: "bariton GPU 2", hours: 1, start: t + 2 * HOUR, purpose: "x" }, ALPHA);
+  // No limit on how far ahead (Can, #4136): the etiquette is not to book preemptively.
+  expect(schedule.reserve({ from: "alpha", resource: "bariton GPU 2", hours: 1, start: t + 72 * HOUR, purpose: "x" }, ALPHA).state).toBe("planned");
   expect(() => schedule.reserve({ from: "alpha", resource: "bariton GPU 2", hours: 1, start: t + 5 * HOUR, purpose: "y" }, ALPHA)).toThrow(/already has a planned or queued/);
   expect(() => schedule.reserve({ from: "alpha", resource: "bariton GPU 2", hours: 1, purpose: " " }, ALPHA)).toThrow(/purpose is required/);
+});
+
+test("holds are shared by default; the holder (or a human) makes one private and back, nobody else can", () => {
+  const a = schedule.reserve({ from: "alpha", resource: "bariton GPU 2", hours: 2, purpose: "serving gemma" }, ALPHA);
+  expect(a.private).toBeUndefined();
+  expect(schedule.setPrivate(a.id, true, ALPHA).private).toBe(true);
+  expect(() => schedule.setPrivate(a.id, false, BETA)).toThrow(/alpha's/);
+  expect(schedule.setPrivate(a.id, false, CAN).private).toBeUndefined();
+  const b = schedule.reserve({ from: "beta", resource: "bariton GPU 2", hours: 1, start: t + 3 * HOUR, purpose: "timing pass", private: true }, BETA);
+  expect(schedule.listing().reservations.find((r) => r.id === b.id)?.private).toBe(true);
 });
 
 test("only a human can book over capacity, and it shows as a conflict", () => {
@@ -167,6 +178,20 @@ test("processes are attributed by reservation, label or folder; the rest of real
   // Beta, gamma and the unlabeled container use it without a reservation; the tiny process is ignored.
   expect(unclaimed).toHaveLength(3);
   expect(unclaimed.join("\n")).toContain("v3-gemma");
+});
+
+test("servers: each running model with its URL, whose it is, and whether others may use it", () => {
+  const serving = (extra: Partial<Observation["processes"][number]>) =>
+    process({ model: "gemma-4-31B-it", engine: "vLLM", endpoints: ["http://192.168.1.131:8010"], ...extra });
+  schedule.observe(observation([serving({ pid: 1, container: "gemma4-31b" })]));
+  expect(formatServers(schedule.listing())).toBe(
+    "gemma-4-31B-it (vLLM) · http://192.168.1.131:8010 · bariton GPU 2 · unbooked, shared (container gemma4-31b)"
+  );
+  const a = schedule.reserve({ from: "alpha", resource: "bariton GPU 2", hours: 2, purpose: "serving" }, ALPHA);
+  schedule.observe(observation([serving({ pid: 1, container: "gemma4-31b" })]));
+  expect(formatServers(schedule.listing())).toContain("@alpha's, shared until 11-10 10:00Z");
+  schedule.setPrivate(a.id, true, ALPHA);
+  expect(formatServers(schedule.listing())).toContain("@alpha's, PRIVATE: do not send requests");
 });
 
 test("an unlabeled server on a GPU booked whole by one holder counts as theirs: not unclaimed, not idle; not when shared", () => {

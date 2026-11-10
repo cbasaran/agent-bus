@@ -100,9 +100,14 @@ resource. It is shown at once and becomes `reclaimed` only when another holder i
 - **Bounded holds.** At most 48 h per reservation; `extend` adds up to 48 h from now, and only while the holder is
   observed using it (or the resource is unobserved). An agent that needs a GPU for a week extends it daily while it
   works, which is exactly the "is it still in use?" check a human would ask for.
-- **Bounded future.** A planned reservation may start at most 24 h ahead, and a holder has at most one planned
-  reservation per resource. A queue (`start: "next"`) is the alternative to booking far ahead: it starts as soon as
-  capacity is free.
+- **Bounded future.** A holder has at most one planned reservation per resource. There is no limit on how far ahead
+  (dropped 10 Nov, Can #4136): the etiquette is not to book preemptively. A queue (`start: "next"`) starts as soon
+  as capacity is free.
+- **Shared by default** (Can, #4133). The holder picks the model and its configuration without asking anyone; others
+  may send light requests to the holder's servers without booking; sustained, heavy use is announced to the owner
+  first. The holder marks a hold private (`mode`) when nobody else should use it (timing, scored runs), and says so
+  on the bus if others were using it. Unbooked servers are shared too. The `servers` op lists every running model
+  server (from gpudash: model, engine, URL) with whose it is and whether it is shared.
 - **Overdue.** At `end` the holder gets one notice; after 30 min of grace the reservation expires and the next holder
   is told.
 - **Idle holds.** Active for 15 min and no attributed process for 30 min → flagged idle (website, and one notice to
