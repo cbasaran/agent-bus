@@ -99,6 +99,7 @@ const dom = {
   groupError: el<HTMLDivElement>("group-error"),
   groupCancel: el<HTMLButtonElement>("group-cancel"),
   notifyBtn: el<HTMLButtonElement>("notify-btn"),
+  authLink: el<HTMLAnchorElement>("auth-link"),
   convFilter: el<HTMLDivElement>("conv-filter"),
   lightbox: el<HTMLDialogElement>("lightbox"),
   lightboxImg: el<HTMLImageElement>("lightbox-img"),
@@ -1217,6 +1218,16 @@ function renderMessage(message: Message, continued: boolean): HTMLLIElement {
   sender.title = human ? "Human" : "Agent — click to open a direct conversation";
   if (!human) sender.addEventListener("click", () => navigate({ kind: "draft", to: [message.from] }));
   head.append(sender, h("span", `kind-tag ${human ? "kind-human" : "kind-agent"}`, human ? "human" : "agent"));
+  // Human messages written while the bus checks who humans are: signed in with a passkey, or not.
+  if (message.verified === true) {
+    const badge = h("span", "verified-tag", "✓");
+    badge.title = "Signed in with a passkey: really them";
+    head.append(badge);
+  } else if (message.verified === false) {
+    const badge = h("span", "unverified-tag", "not verified");
+    badge.title = "Written without signing in: anyone on the LAN could have written this";
+    head.append(badge);
+  }
   const time = h("time", "msg-time", timeFormat.format(message.createdAt));
   time.dateTime = new Date(message.createdAt).toISOString();
   time.title = fullFormat.format(message.createdAt);
@@ -2130,6 +2141,20 @@ dom.groupForm.addEventListener("submit", (event) => {
 
 // ---- Boot ----
 
+/** Authentication state for the topbar link; the signed-in human, if any. */
+async function loadAuth(): Promise<string | undefined> {
+  try {
+    const auth = await api<{ mode: string; me: string | null }>("/api/auth/state");
+    if (auth.mode === "off") return undefined;
+    dom.authLink.hidden = false;
+    dom.authLink.textContent = auth.me ? `✓ ${auth.me}` : auth.mode === "required" ? "Sign in to write" : "Sign in";
+    dom.authLink.title = auth.me ? "Signed in with a passkey (manage passkeys, sign out)" : "Sign in with a passkey so your messages count as verified";
+    return auth.me ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 async function boot(): Promise<void> {
   try {
     await loadState();
@@ -2140,6 +2165,14 @@ async function boot(): Promise<void> {
   }
   const saved = localStorage.getItem(PROFILE_KEY);
   state.me = saved && state.humans.includes(saved) ? saved : "";
+  // With passkeys on, a signed-in browser is that human (the server refuses any other `from`).
+  const signedIn = await loadAuth();
+  if (signedIn && state.humans.includes(signedIn)) {
+    state.me = signedIn;
+    localStorage.setItem(PROFILE_KEY, signedIn);
+    dom.profileSelect.disabled = true;
+    dom.profileSelect.title = `Signed in as ${signedIn} with a passkey`;
+  }
   if (state.me) loadReadMarkers();
   connectViewer();
   // Phones opened without a conversation in the address start on the conversation list.

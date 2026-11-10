@@ -7,8 +7,8 @@ const publicDir = path.join(packageRoot, "public");
 
 mkdirSync(publicDir, { recursive: true });
 
-// The conversations (index.html + app.js) and the resource schedule (resources.html + resources.js).
-for (const name of ["app", "resources"]) {
+// The conversations (index.html + app.js), the resource schedule (resources.*) and passkey sign-in (auth.*).
+for (const name of ["app", "resources", "auth"]) {
   const buildResult = await Bun.build({
     entrypoints: [path.join(uiDir, `${name}.ts`)],
     outdir: publicDir,
@@ -25,7 +25,7 @@ for (const name of ["app", "resources"]) {
   }
 }
 
-for (const file of ["index.html", "resources.html", "styles.css"]) {
+for (const file of ["index.html", "resources.html", "auth.html", "styles.css"]) {
   copyFileSync(path.join(uiDir, file), path.join(publicDir, file));
 }
 

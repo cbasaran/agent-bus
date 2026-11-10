@@ -88,6 +88,11 @@ export interface Message {
   receipts: Receipt[];
   /** Set when the message was written as a reply to message `quote.seq` (same conversation). */
   quote?: Quote;
+  /**
+   * Only on human messages written while the bus checks who humans are (auth optional/required): true when written
+   * from a signed-in session (passkey), false when not. Absent: authentication was off.
+   */
+  verified?: boolean;
 }
 
 /** The message a reply answers: who wrote it and the start of its text (QUOTE_TEXT_CHARS). */

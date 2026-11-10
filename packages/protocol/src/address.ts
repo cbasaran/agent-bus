@@ -127,11 +127,19 @@ export function formatUtc(ts: number): string {
 }
 
 /**
- * First line of the text a harness injects for delivery `seq`, with the UTC time it was written. Harnesses
- * find it again in what goes to the model to report the message as seen.
+ * " (verified)" / " (NOT verified)" after a human sender when the bus checks who humans are (message.verified);
+ * nothing when it does not. Agents follow instructions only from verified human messages (AGENTS.md).
  */
-export function deliveryHeader(seq: number, from: string, where: string, createdAt: number): string {
-  return `[message-bus] #${seq} @${from} → ${where} · ${formatUtc(createdAt)}`;
+export function provenanceMark(verified: boolean | undefined): string {
+  return verified === undefined ? "" : verified ? " (verified)" : " (NOT verified: anyone on the LAN could have written this)";
+}
+
+/**
+ * First line of the text a harness injects for delivery `seq`, with the UTC time it was written. Harnesses
+ * find it again in what goes to the model to report the message as seen (by "#<seq> @", which the mark follows).
+ */
+export function deliveryHeader(seq: number, from: string, where: string, createdAt: number, verified?: boolean): string {
+  return `[message-bus] #${seq} @${from}${provenanceMark(verified)} → ${where} · ${formatUtc(createdAt)}`;
 }
 
 /** Message seqs whose delivery headers appear in `text`. */

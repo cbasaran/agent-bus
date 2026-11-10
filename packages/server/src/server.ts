@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, renameSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
+import { AuthError, clearedCookie, HumanAuth, sessionCookie, type AuthMode } from "./auth";
 import {
   baseAgentId,
   ALL_CONVERSATION_ID,
@@ -48,6 +49,13 @@ export interface BusServerOptions {
    * using the plain port. The files are read at startup; a renewed certificate takes effect on restart.
    */
   https?: { port: number; certFile: string; keyFile: string };
+  /**
+   * Human authentication with passkeys (experimental). `off` (default): `from` is trusted as today. `optional`:
+   * humans can sign in; their messages carry `verified`. `required`: writing as a human needs a session.
+   * `rpId` is the host name the website is opened at (passkeys are bound to it); `origins` defaults to
+   * https://<rpId>:<https port> and http://localhost:<port>.
+   */
+  auth?: { mode: AuthMode; rpId?: string; origins?: string[] };
 }
 
 export interface BusServerHandle {
@@ -168,6 +176,17 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
   /** Ids no agent can take: humans and the built-in @resources. */
   const reservedIds = new Set([...humans, RESOURCES_AGENT_ID]);
   const db = new BusDatabase(dbPath, humans);
+  // The ports are known once the servers listen; the passkey origins follow them.
+  let boundPort = 0;
+  let boundHttpsPort: number | undefined;
+  const rpId = options.auth?.rpId ?? "localhost";
+  const auth = new HumanAuth(db.db, {
+    mode: options.auth?.mode ?? "off",
+    rpId,
+    humans,
+    origins: () =>
+      options.auth?.origins ?? [...(boundHttpsPort ? [`https://${rpId}:${boundHttpsPort}`] : []), `http://localhost:${boundPort}`],
+  });
   // Nobody is connected yet: apply the logoff rule to everyone (also cleans up after a crash).
   for (const agent of db.listAgents()) db.removeIfIdle(agent.id);
   const startedAt = Date.now();
@@ -382,12 +401,63 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
     }
   }, 30_000);
 
-  /** The writer of a schedule request. */
-  const actorOf = (body: Record<string, unknown>): Actor => {
+  /** The writer of a schedule request. Humans who are not signed in (when auth is on) act without human powers. */
+  const actorOf = (req: Request, body: Record<string, unknown>): Actor => {
     if (typeof body.from !== "string") throw new HttpError(400, "from must be a participant id");
     const writer = knownParticipant(body.from.trim().toLowerCase());
     if (!writer) throw new HttpError(400, `Unknown participant "${body.from}"`);
-    return { id: writer.id, kind: writer.kind };
+    const verified = auth.checkWriter(req, writer.id, writer.kind);
+    return { id: writer.id, kind: writer.kind === "human" && verified === false ? "agent" : writer.kind };
+  };
+
+  // ---- Human authentication (experimental; docs/design/resources-and-auth.md part B) ----
+
+  /** A short label for a session or passkey: the browser's user agent, as the human sees it in the list. */
+  const deviceLabel = (req: Request): string => {
+    const ua = req.headers.get("user-agent") ?? "";
+    const os = /iPhone|iPad|Mac OS X|Android|Windows|Linux/.exec(ua)?.[0]?.replace("Mac OS X", "Mac") ?? "device";
+    const browser = /Edg|Firefox|Chrome|Safari/.exec(ua)?.[0]?.replace("Edg", "Edge") ?? "browser";
+    return `${browser} on ${os}`;
+  };
+  const withCookie = (body: unknown, cookie: string): Response =>
+    Response.json(body, { headers: { ...CORS_HEADERS, "Set-Cookie": cookie } });
+
+  const handleAuth = async (req: Request, url: URL): Promise<Response> => {
+    const { pathname } = url;
+    const method = req.method;
+    if (method === "GET" && pathname === "/api/auth/state") {
+      const me = auth.mode === "off" ? null : (auth.humanOf(req) ?? null);
+      return json({ mode: auth.mode, rpId, httpsPort: boundHttpsPort ?? null, me, enrolled: auth.enrolled() });
+    }
+    if (auth.mode === "off") throw new HttpError(404, "Authentication is off on this bus (agent-bus serve --auth optional)");
+    if (method !== "POST" && method !== "GET") throw new HttpError(405, "Method not allowed");
+    if (method === "POST" && pathname === "/api/auth/register/options") {
+      const body = await readJsonObject(req);
+      return json(auth.registerOptions(String(body.invite ?? "")));
+    }
+    if (method === "POST" && pathname === "/api/auth/register/verify") {
+      const result = auth.registerVerify(await readJsonObject(req), deviceLabel(req));
+      return withCookie({ human: result.human }, sessionCookie(result.token));
+    }
+    if (method === "POST" && pathname === "/api/auth/login/options") return json(auth.loginOptions());
+    if (method === "POST" && pathname === "/api/auth/login/verify") {
+      const result = auth.loginVerify(await readJsonObject(req), deviceLabel(req));
+      return withCookie({ human: result.human }, sessionCookie(result.token));
+    }
+    if (method === "POST" && pathname === "/api/auth/logout") {
+      auth.logout(req);
+      return withCookie({ ok: true }, clearedCookie());
+    }
+    const me = auth.humanOf(req);
+    if (!me) throw new HttpError(401, "Sign in first");
+    if (method === "GET" && pathname === "/api/auth/credentials") return json({ human: me, credentials: auth.credentials(me) });
+    const remove = /^\/api\/auth\/credentials\/([^/]+)\/remove$/.exec(pathname);
+    if (method === "POST" && remove?.[1]) {
+      auth.checkWriter(req, me, "human");
+      auth.removeCredential(me, decodeURIComponent(remove[1]));
+      return withCookie({ ok: true }, clearedCookie());
+    }
+    throw new HttpError(404, `No route for ${method} ${pathname}`);
   };
 
   const handleAgentOpen = (ws: Socket): void => {
@@ -693,6 +763,7 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
     if (!writer) {
       throw new HttpError(400, `Unknown participant "${body.from}". Known ids: ${knownIds().join(", ")}`);
     }
+    const verified = auth.checkWriter(req, writer.id, writer.kind);
     // A reply goes to the conversation of the message it answers (then it is a conversationId post) and quotes it.
     let replyToSeq: number | undefined;
     if (body.replyToSeq !== undefined && body.replyToSeq !== null) {
@@ -778,6 +849,7 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
       createdAt: now,
       recipients: recipientsFor(conversation, writer.id).map((p) => p.id),
       replyToSeq,
+      ...(verified === undefined ? {} : { verified }),
     });
     if (writer.kind === "human") db.touchParticipant(writer.id, now);
     const updated = db.getConversation(conversation.id);
@@ -788,6 +860,8 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
 
   const postFile = async (req: Request, url: URL): Promise<{ file: FileRef }> => {
     const from = nonEmptyParam(url, "from");
+    const uploader = from ? knownParticipant(from.toLowerCase()) : undefined;
+    if (uploader) auth.checkWriter(req, uploader.id, uploader.kind);
     if (!from || !knownParticipant(from.toLowerCase())) {
       throw new HttpError(400, `Unknown participant "${from ?? ""}". Known ids: ${knownIds().join(", ")}`);
     }
@@ -877,6 +951,8 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
     "styles.css": { source: "styles.css", type: "text/css; charset=utf-8" },
     "app.js": { source: "app.ts", type: "application/javascript; charset=utf-8" },
     "resources.js": { source: "resources.ts", type: "application/javascript; charset=utf-8" },
+    "auth.html": { source: "auth.html", type: "text/html; charset=utf-8" },
+    "auth.js": { source: "auth.ts", type: "application/javascript; charset=utf-8" },
   };
   const serveUiAsset = async (asset: string): Promise<Response> => {
     const spec = UI_ASSETS[asset];
@@ -932,10 +1008,11 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
     const fileMatch = /^\/api\/files\/([^/]+)$/.exec(pathname);
     if (method === "GET" && fileMatch?.[1]) return getFile(decodeURIComponent(fileMatch[1]));
     if (method === "POST" && pathname === "/api/settings") return json(await postSetting(req));
+    if (pathname.startsWith("/api/auth/")) return handleAuth(req, url);
     if (method === "GET" && pathname === "/api/resources") return json(schedule.listing());
     if (method === "POST" && pathname === "/api/resources") {
       const body = await readJsonObject(req);
-      actorOf(body);
+      actorOf(req, body);
       const { kind, host: resourceHost, name, label, capacity, unit } = body;
       if ((kind !== "service" && kind !== "account") || typeof resourceHost !== "string" || typeof name !== "string") {
         throw new HttpError(400, 'Give kind ("service" or "account"), host and name');
@@ -953,14 +1030,14 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
     }
     if (method === "POST" && pathname === "/api/reservations") {
       const body = await readJsonObject(req);
-      const actor = actorOf(body);
+      const actor = actorOf(req, body);
       const reservation = schedule.reserve(body as unknown as ReserveRequest, actor);
       return json({ reservation, resource: schedule.resolve(reservation.resourceId) });
     }
     const reservationMatch = /^\/api\/reservations\/([^/]+)\/(release|extend)$/.exec(pathname);
     if (method === "POST" && reservationMatch?.[1]) {
       const body = await readJsonObject(req);
-      const actor = actorOf(body);
+      const actor = actorOf(req, body);
       const id = decodeURIComponent(reservationMatch[1]);
       if (reservationMatch[2] === "release") {
         const reservation = id === "current" && typeof body.resource === "string" ? schedule.releaseOn(body.resource, actor) : schedule.release(id, actor);
@@ -1017,6 +1094,7 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
         } catch (error) {
           if (error instanceof HttpError) return json({ error: error.message }, error.status);
           if (error instanceof ScheduleError) return json({ error: error.message }, error.status);
+          if (error instanceof AuthError) return json({ error: error.message }, error.status);
           console.error(error);
           return json({ error: error instanceof Error ? error.message : String(error) }, 500);
         }
@@ -1024,6 +1102,7 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
       if (req.method === "GET") {
         if (pathname === "/" || pathname === "/index.html") return serveUiAsset("index.html");
         if (pathname === "/resources") return serveUiAsset("resources.html");
+        if (pathname === "/auth") return serveUiAsset("auth.html");
         if (/^\/[a-z]+\.(js|css|html)$/.test(pathname)) return serveUiAsset(pathname.slice(1));
       }
       return new Response("Not found", { status: 404 });
@@ -1050,6 +1129,7 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
   const server = listen(options.port ?? DEFAULT_BUS_PORT);
   const port = server.port;
   if (port === undefined) throw new Error("Server did not bind a port");
+  boundPort = port;
   const lan = resolveLanAddresses(port, host);
   lanUrls = lan.lanUrls;
 
@@ -1062,6 +1142,7 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
     secure = listen(options.https.port, { cert: Bun.file(certFile), key: Bun.file(keyFile) });
   }
   const httpsPort = secure?.port;
+  boundHttpsPort = httpsPort;
 
   let stopped = false;
   return {

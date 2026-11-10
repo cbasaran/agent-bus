@@ -1950,3 +1950,44 @@ ul.md-list ul.md-list { list-style: circle; }
   opacity: 1;
   text-decoration: underline;
 }
+
+/* ---- Passkeys (auth.html, verified badges; experimental) ---- */
+
+.verified-tag {
+  color: var(--online);
+  font-weight: 700;
+}
+
+.unverified-tag {
+  padding: 0 5px;
+  border: 1px solid var(--warning);
+  border-radius: 4px;
+  color: var(--warning);
+  font-size: 11px;
+}
+
+.auth-main {
+  max-width: 640px;
+}
+
+.auth-card {
+  padding: 16px 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.auth-card h3 {
+  margin: 14px 0 6px;
+  font-size: 14px;
+}
+
+.auth-list {
+  margin: 0 0 8px;
+  padding-left: 18px;
+}
+
+.auth-note {
+  color: var(--muted);
+  font-size: 13px;
+}

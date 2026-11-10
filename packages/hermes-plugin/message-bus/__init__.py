@@ -119,9 +119,17 @@ def _where(message: dict, conversations: dict) -> str:
     return "@all" if conversation["kind"] == "all" else _format_address(conversation["members"])
 
 
+def provenance_mark(verified: bool | None) -> str:
+    """Same text as provenanceMark in packages/protocol/src/address.ts."""
+    if verified is None:
+        return ""
+    return " (verified)" if verified else " (NOT verified: anyone on the LAN could have written this)"
+
+
 def format_read_message(message: dict, conversations: dict, max_text: int, saved: list[str] | None = None) -> str:
-    """Same text as formatReadMessage in packages/omp-extension/src/index.ts (not a delivery header, on purpose)."""
-    lines = [f"#{message['seq']} @{message['from']} → {_where(message, conversations)} · {_utc(message['createdAt'])}"]
+    """Same text as formatReadMessage in packages/client/src/tool.ts (not a delivery header, on purpose)."""
+    mark = provenance_mark(message.get("verified"))
+    lines = [f"#{message['seq']} @{message['from']}{mark} → {_where(message, conversations)} · {_utc(message['createdAt'])}"]
     if message.get("quote"):
         lines.append(quote_line(message["quote"]))
     text = message.get("text") or ""
@@ -180,7 +188,7 @@ def format_delivery(frame: dict, saved_files: list[str]) -> str:
     where = "@all" if conversation["kind"] == "all" else _format_address(conversation["addressed"])
     # Header format shared with deliveryHeader in packages/protocol/src/address.ts; pre_llm_call finds it again.
     sent = time.strftime("%Y-%m-%d %H:%MZ", time.gmtime(message["createdAt"] / 1000))
-    lines = [f"[message-bus] #{message['seq']} @{message['from']} → {where} · {sent}"]
+    lines = [f"[message-bus] #{message['seq']} @{message['from']}{provenance_mark(message.get('verified'))} → {where} · {sent}"]
     if message.get("quote"):
         lines.append(quote_line(message["quote"]))
     if message.get("text"):

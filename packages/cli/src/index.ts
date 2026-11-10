@@ -1,10 +1,16 @@
-import { createBusServer, type BusServerOptions } from "@agent-bus/server";
+import { Database } from "bun:sqlite";
+import { existsSync } from "node:fs";
+import { homedir, hostname } from "node:os";
+import path from "node:path";
+import { createBusServer, createInvite, type BusServerOptions } from "@agent-bus/server";
 import { DEFAULT_BUS_PORT } from "@agent-bus/protocol";
 import { runProbe } from "./probe";
 import { runTicketed } from "./run";
 
 const USAGE = `Usage: agent-bus serve [--host 0.0.0.0] [--port 7800] [--data-dir DIR] [--humans can,umit]
                        [--https-port 7843 --tls-cert FILE --tls-key FILE]
+                       [--auth off|optional|required --rp-id HOST [--origin URL]…]
+       agent-bus invite HUMAN [--data-dir DIR] [--url https://HOST:7843]
        agent-bus probe [--bus URL] [--interval 30] [--once] [--dry-run]
        agent-bus run [--bus URL] RESERVATION[,RESERVATION…] -- COMMAND [ARGS…]
 
@@ -16,6 +22,13 @@ serve:
   --https-port  Also serve over TLS on this port (for browsers; agents keep the plain port)
   --tls-cert    PEM certificate for --https-port
   --tls-key     PEM private key for --https-port
+  --auth        Passkeys for humans (experimental): off (default), optional (sign-in marks messages verified),
+                required (writing as a human needs a session)
+  --rp-id       The host name humans open the website at (passkeys are bound to it); default localhost
+  --origin      A website origin passkeys may be used from (repeat); default https://<rp-id>:<https port>
+                and http://localhost:<port>
+
+invite: a one-time link (10 min) for HUMAN to create a passkey; needs the bus's database, so only bariton's shell can.
 
 probe: report this host's GPUs and their processes to the bus's resource schedule (read-only).
   --once        Report once and print the report; --dry-run prints without sending
@@ -61,6 +74,16 @@ function parseServeArgs(args: string[]): BusServerOptions {
       case "--humans":
         options.humans = value.split(",");
         break;
+      case "--auth":
+        if (value !== "off" && value !== "optional" && value !== "required") throw new Error("--auth is off, optional or required");
+        options.auth = { ...options.auth, mode: value };
+        break;
+      case "--rp-id":
+        options.auth = { mode: "off", ...options.auth, rpId: value };
+        break;
+      case "--origin":
+        options.auth = { mode: "off", ...options.auth, origins: [...(options.auth?.origins ?? []), value.replace(/\/+$/, "")] };
+        break;
       default:
         throw new Error(`Unknown option "${flag}"`);
     }
@@ -81,6 +104,14 @@ export async function runCli(argv: string[]): Promise<number> {
   if (command === undefined || command === "help" || command === "--help" || command === "-h") {
     console.log(USAGE);
     return command === undefined ? 1 : 0;
+  }
+  if (command === "invite") {
+    try {
+      return runInvite(rest);
+    } catch (error) {
+      console.error(`agent-bus invite: ${error instanceof Error ? error.message : String(error)}`);
+      return 1;
+    }
   }
   if (command === "probe" || command === "run") {
     try {
@@ -115,6 +146,28 @@ export async function runCli(argv: string[]): Promise<number> {
   process.once("SIGINT", shutdown);
   process.once("SIGTERM", shutdown);
   return promise;
+}
+
+function runInvite(args: string[]): number {
+  let dataDir = process.env.AGENT_BUS_DATA_DIR || path.join(homedir(), ".agent-bus");
+  let url = `https://${hostname().split(".")[0]}:7843`;
+  let human: string | undefined;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i] ?? "";
+    if (arg === "--data-dir") dataDir = args[++i] ?? "";
+    else if (arg === "--url") url = (args[++i] ?? "").replace(/\/+$/, "");
+    else if (arg.startsWith("--")) throw new Error(`Unknown option "${arg}"`);
+    else human = arg.replace(/^@/, "").toLowerCase();
+  }
+  if (!human) throw new Error("Give the human's id, e.g. agent-bus invite can");
+  const dbPath = path.join(dataDir, "message-bus.sqlite");
+  if (!existsSync(dbPath)) throw new Error(`No bus database at ${dbPath}`);
+  const db = new Database(dbPath, { strict: true });
+  db.exec("PRAGMA busy_timeout = 5000;");
+  const token = createInvite(db, human);
+  db.close();
+  console.log(`Open within 10 minutes, on the device that should hold ${human}'s passkey (works once):\n${url}/auth#invite=${token}`);
+  return 0;
 }
 
 async function runTool(command: "probe" | "run", args: string[]): Promise<number> {
