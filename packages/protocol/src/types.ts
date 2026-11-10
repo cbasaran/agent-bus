@@ -177,7 +177,9 @@ export type ViewerServerFrame =
   | { type: "participants"; participants: Participant[] }
   | ReceiptFrame
   /** Live output of the agent this viewer watches. */
-  | { type: "activity"; agentId: string; events: ActivityEvent[]; replay?: boolean };
+  | { type: "activity"; agentId: string; events: ActivityEvent[]; replay?: boolean }
+  /** The resource schedule changed (GET /api/resources has the new state). */
+  | { type: "resources" };
 
 /** The viewer watches one agent's live output at a time (`agentId: null` stops). */
 export type ViewerClientFrame = { type: "watch"; agentId: string | null };

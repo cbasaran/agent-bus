@@ -120,14 +120,18 @@ A probe runs on each GPU host (`agent-bus probe --bus <url>`, a user service). E
 its container (cgroup → docker id → name and labels) and, when readable, its `AGENT_BUS_RESERVATION` environment
 variable. It posts one observation per host. Attribution, first match wins:
 
-1. `AGENT_BUS_RESERVATION=<id>` in the process environment (set by `agent-bus run`; exact);
+1. `AGENT_BUS_RESERVATION=<id>[,<id>…]` in the process environment (set by `agent-bus run`; exact);
 2. the container label `agent-bus.reservation=<id>` (for `docker run --gpus …`);
-3. the working directory inside an agent's project folder on that host (omp, Antigravity and Claude Code agents are
-   folders), which names the agent but not the reservation;
-4. otherwise unattributed.
+3. the container label `agent-bus.agent=<id>` (names the agent, not the reservation);
+4. the working directory inside an agent's project folder on that host (omp, Antigravity and Claude Code agents are
+   folders), which names the agent but not the reservation; for containers, the compose project's folder
+   (`com.docker.compose.project.working_dir`) stands in for the working directory;
+5. otherwise unattributed.
 
-Processes in containers started without the label fall to rule 4 (their cwd is inside the container). The design's
-answer is the launcher and the label, not cleverness.
+A real probe of bariton on 10 Nov 08:00Z: compactor's two GRPO processes (GPUs 1 and 2) attribute by folder
+(rule 4); the three vLLM containers (`v3-gemma4-31b`, `cmp-qwen25-14b`, `v3-qwen38-27b`) are plain `docker run`
+without labels and fall to rule 5. That is the expected gap: the launcher rule in AGENTS.md has to say "label your
+containers", and the Resources page shows unlabeled ones by container name so a human can tell whose they are.
 
 ### A.7 Gating: from advisory to enforced
 

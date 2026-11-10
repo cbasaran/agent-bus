@@ -1,15 +1,28 @@
 import { createBusServer, type BusServerOptions } from "@agent-bus/server";
+import { DEFAULT_BUS_PORT } from "@agent-bus/protocol";
+import { runProbe } from "./probe";
+import { runTicketed } from "./run";
 
 const USAGE = `Usage: agent-bus serve [--host 0.0.0.0] [--port 7800] [--data-dir DIR] [--humans can,umit]
                        [--https-port 7843 --tls-cert FILE --tls-key FILE]
+       agent-bus probe [--bus URL] [--interval 30] [--once] [--dry-run]
+       agent-bus run [--bus URL] RESERVATION[,RESERVATION…] -- COMMAND [ARGS…]
 
+serve:
   --host        Interface to bind (default 0.0.0.0)
   --port        Port to listen on (default 7800; 0 picks a free port)
   --data-dir    Data directory (default $AGENT_BUS_DATA_DIR or ~/.agent-bus)
   --humans      Comma-separated human ids (default $BUS_HUMANS or can,umit)
   --https-port  Also serve over TLS on this port (for browsers; agents keep the plain port)
   --tls-cert    PEM certificate for --https-port
-  --tls-key     PEM private key for --https-port`;
+  --tls-key     PEM private key for --https-port
+
+probe: report this host's GPUs and their processes to the bus's resource schedule (read-only).
+  --once        Report once and print the report; --dry-run prints without sending
+
+run: start COMMAND on the GPUs of active reservations only (CUDA_VISIBLE_DEVICES), marked as theirs.
+
+--bus defaults to $AGENT_BUS_URL or http://127.0.0.1:${DEFAULT_BUS_PORT}.`;
 
 function parsePort(value: string): number {
   const port = Number(value);
@@ -69,6 +82,14 @@ export async function runCli(argv: string[]): Promise<number> {
     console.log(USAGE);
     return command === undefined ? 1 : 0;
   }
+  if (command === "probe" || command === "run") {
+    try {
+      return await runTool(command, rest);
+    } catch (error) {
+      console.error(`agent-bus ${command}: ${error instanceof Error ? error.message : String(error)}`);
+      return 1;
+    }
+  }
   if (command !== "serve") {
     console.error(`Unknown command "${command}"\n\n${USAGE}`);
     return 1;
@@ -94,4 +115,33 @@ export async function runCli(argv: string[]): Promise<number> {
   process.once("SIGINT", shutdown);
   process.once("SIGTERM", shutdown);
   return promise;
+}
+
+async function runTool(command: "probe" | "run", args: string[]): Promise<number> {
+  let bus = (process.env.AGENT_BUS_URL?.trim() || `http://127.0.0.1:${DEFAULT_BUS_PORT}`).replace(/\/+$/, "");
+  let interval = 30;
+  let once = false;
+  let dryRun = false;
+  const positional: string[] = [];
+  let i = 0;
+  for (; i < args.length; i++) {
+    const arg = args[i] ?? "";
+    if (arg === "--") {
+      i++;
+      break;
+    }
+    if (arg === "--bus") bus = (args[++i] ?? "").replace(/\/+$/, "");
+    else if (arg === "--interval" && command === "probe") interval = Number(args[++i]);
+    else if (arg === "--once" && command === "probe") once = true;
+    else if (arg === "--dry-run" && command === "probe") dryRun = once = true;
+    else if (arg.startsWith("--")) throw new Error(`Unknown option "${arg}"`);
+    else positional.push(arg);
+  }
+  if (!bus) throw new Error("--bus needs a URL");
+  if (command === "probe") {
+    if (!(interval >= 5)) throw new Error("--interval must be at least 5 (seconds)");
+    return runProbe(bus, { intervalMs: interval * 1000, once, dryRun });
+  }
+  const ids = positional.flatMap((p) => p.split(",")).map((s) => s.trim()).filter(Boolean);
+  return runTicketed(bus, ids, args.slice(i));
 }

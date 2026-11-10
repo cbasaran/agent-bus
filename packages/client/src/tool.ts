@@ -6,13 +6,14 @@ import { realpathSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { deliveryHeader, describeReceipts, formatAddress, formatUtc, quoteLine } from "../../protocol/src/address";
+import type { Reservation, ReservationResponse, Resource, ResourcesResponse } from "../../protocol/src/resources";
 import type { Conversation, FileRef, Message, PostMessageResponse, ReadResponse, ReceiptFrame } from "../../protocol/src/types";
 import type { BusConnection, Delivery } from "./connection";
 
 export const TOOL_NAME = "message-bus";
 
 export interface MessageBusToolParams {
-  op: "reply" | "write" | "send" | "set" | "inbox" | "show" | "history" | "search";
+  op: "reply" | "write" | "send" | "set" | "inbox" | "show" | "history" | "search" | "resources" | "reserve" | "release" | "extend";
   message_id?: number;
   to?: string;
   message?: string;
@@ -24,6 +25,12 @@ export interface MessageBusToolParams {
   since?: number;
   limit?: number;
   scope?: "mine" | "all";
+  resource?: string;
+  reservation?: string;
+  hours?: number;
+  amount?: number;
+  start?: string;
+  purpose?: string;
 }
 
 /** One tool parameter, for building a harness's schema (zod for omp, JSON schema for MCP). Only `op` is required. */
@@ -38,8 +45,8 @@ export const TOOL_PARAMS: readonly ToolParam[] = [
   {
     name: "op",
     type: "string",
-    enum: ["reply", "write", "send", "set", "inbox", "show", "history", "search"],
-    description: "reply/write/send a message, set a setting, or read: inbox, show, history, search",
+    enum: ["reply", "write", "send", "set", "inbox", "show", "history", "search", "resources", "reserve", "release", "extend"],
+    description: "reply/write/send a message, set a setting, read (inbox, show, history, search), or the resource schedule (resources, reserve, release, extend)",
   },
   { name: "message_id", type: "number", description: "a message's #number (reply, show, history)" },
   { name: "to", type: "string", description: '"@all", "@id" or "@{id1,id2}" (write/send, history)' },
@@ -52,6 +59,12 @@ export const TOOL_PARAMS: readonly ToolParam[] = [
   { name: "since", type: "number", description: "only messages after this #number (inbox)" },
   { name: "limit", type: "number", description: "how many messages, default 20, at most 100 (inbox, history, search)" },
   { name: "scope", type: "string", enum: ["mine", "all"], description: '"mine" (default): your conversations and @all; "all": every conversation' },
+  { name: "resource", type: "string", description: 'a resource: its label ("bariton GPU 2"), GPU uuid prefix or id (resources, reserve, release)' },
+  { name: "reservation", type: "string", description: "a reservation id, r_… (release, extend)" },
+  { name: "hours", type: "number", description: "how long (reserve) or how much longer from now (extend), at most 48" },
+  { name: "amount", type: "number", description: "part of the resource (GPUs: GB of memory; services: slots); omit for all of it (reserve)" },
+  { name: "start", type: "string", description: 'reserve: omit for now, a UTC time ("2026-11-10 14:00Z", at most 24 h ahead), or "next" to queue until it is free' },
+  { name: "purpose", type: "string", description: "one line: what it is for (reserve)" },
 ];
 
 /** Every argument the tool takes; anything else is rejected rather than silently ignored. */
@@ -88,7 +101,13 @@ export function toolDescription(harness: { arrives: string; notJoining: string }
     "op=history: the last `limit` messages of a conversation: `to` (as you would write to it, e.g. \"@all\", \"@hilde\") " +
     "or the conversation of `message_id`. " +
     "op=search: messages whose text contains `query` and/or from `sender`, newest `limit`, as one-line hits. " +
-    "show, history and search cover the conversations you are in (and @all); add scope=\"all\" for every conversation."
+    "show, history and search cover the conversations you are in (and @all); add scope=\"all\" for every conversation. " +
+    "Shared GPUs, services and accounts (experimental; instead of claim/release messages): op=resources lists who holds " +
+    "what now and next, and what is actually running; op=reserve takes `resource`, `hours`, `purpose` (optional " +
+    "`amount`, `start`) and refuses when it does not fit, saying when it is free; start GPU jobs with " +
+    "`agent-bus run <reservation> -- <command>` so they run on exactly those GPUs and count as yours; op=release " +
+    "(`reservation` or `resource`) as soon as you are done; op=extend (`reservation`, `hours`) while you still use it. " +
+    "@resources writes to you when a hold is over, idle, or yours after a wait."
   );
 }
 
@@ -183,6 +202,74 @@ function withinBudget(entries: string[], separator: string): { text: string; dro
     size += entry.length + separator.length;
   }
   return { text: kept.join(separator), dropped: entries.length - kept.length };
+}
+
+// ---- Resource schedule texts ----
+
+/** "now", a UTC time ("2026-11-10 14:00Z" or ISO) or "next", as the server takes it. */
+function parseStart(start: string): number | "next" {
+  const s = start.trim().toLowerCase();
+  if (s === "next") return "next";
+  if (s === "now") return Date.now();
+  const at = Date.parse(start.trim().replace(" ", "T"));
+  if (Number.isNaN(at)) throw new Error(`start must be "next", "now" or a UTC time like "2026-11-10 14:00Z", not ${JSON.stringify(start)}.`);
+  return at;
+}
+
+function findResource(resources: Resource[], query: string): Resource | undefined {
+  const q = query.trim().toLowerCase();
+  return resources.find((r) => r.id.toLowerCase() === q || r.label.toLowerCase() === q || (r.uuid ?? "").toLowerCase().replace(/^gpu-/, "").startsWith(q.replace(/^gpu-/, "")));
+}
+
+/** An amount in the resource's unit, as people say it: GB for GPU memory. */
+function formatAmount(amount: number, resource: Resource): string {
+  if (resource.unit === "MiB") return `${(amount / 1024).toFixed(amount >= 10 * 1024 ? 0 : 1)} GB`;
+  return `${amount} ${resource.unit}`;
+}
+
+const SHORT_TIME = (ts: number): string => formatUtc(ts).slice(5);
+
+export function formatReservation(r: Reservation, resource: Resource): string {
+  const part = r.amount === undefined ? "all of it" : formatAmount(r.amount, resource);
+  const when =
+    r.state === "queued"
+      ? `queued for ${Math.round(r.durationMs / 360_000) / 10} h once free`
+      : `${SHORT_TIME(r.start ?? 0)} – ${SHORT_TIME(r.end ?? 0)}`;
+  return `${r.id} @${r.holder} ${resource.label} (${part}), ${when}, ${r.state}: ${r.purpose}`;
+}
+
+function runHint(res: ReservationResponse): string {
+  if (res.resource.kind !== "gpu") return "";
+  const run = `agent-bus run ${res.reservation.id} -- <command> (only that GPU is visible to it, and it counts as yours)`;
+  if (res.reservation.state === "queued") return ` @resources writes to you when it is yours; then start its jobs with: ${run}.`;
+  if (res.reservation.state === "planned") return ` From its start, run its jobs with: ${run}.`;
+  return ` Start its jobs with: ${run}.`;
+}
+
+/** The schedule as the resources op shows it: per resource, holders now and next, then what runs on it; warnings last. */
+export function formatSchedule(res: ResourcesResponse, only?: string): string {
+  const resources = only ? res.resources.filter((r) => r === findResource(res.resources, only)) : res.resources;
+  if (resources.length === 0) return only ? `No resource matches "${only}".` : "No resources on the schedule yet.";
+  const lines: string[] = [];
+  for (const resource of resources) {
+    const observed = res.observed[resource.id];
+    const head = [`${resource.label} (${resource.id}`];
+    if (resource.unit === "MiB") head.push(`, ${formatAmount(resource.capacity, resource)}`);
+    head.push(")");
+    if (observed) head.push(`: ${formatAmount(observed.memoryUsed, resource)} used, ${observed.utilization}% busy`);
+    lines.push(head.join(""));
+    const open = res.reservations.filter((r) => r.resourceId === resource.id && ["active", "overdue", "planned", "queued"].includes(r.state));
+    if (open.length === 0) lines.push("  reserved: nobody");
+    for (const r of open) lines.push(`  ${formatReservation(r, resource)}${r.idleSince !== undefined ? " (idle)" : ""}`);
+    for (const p of observed?.processes ?? []) {
+      const who = p.agentId ? `@${p.agentId}` : p.container ? `container ${p.container}` : `pid ${p.pid}`;
+      const what = p.container && p.agentId ? ` container ${p.container}` : ` ${p.command.slice(0, 50)}`;
+      lines.push(`  runs: ${who}${what}, ${formatAmount(p.memory, resource)}${p.reservationId ? ` (${p.reservationId})` : ""}`);
+    }
+  }
+  const warnings = res.warnings.filter((w) => resources.some((r) => r.id === w.resourceId));
+  if (warnings.length > 0) lines.push("Warnings:", ...warnings.map((w) => `  ${w.text}`));
+  return lines.join("\n");
 }
 
 /** How long write/send wait for recipients' harnesses to accept the message before reporting (ms). */
@@ -292,6 +379,36 @@ export class BusTool {
         const hits = res.messages.map((m) => formatSearchHit(m, byId.get(m.conversationId), params.query ?? ""));
         const { text, dropped } = withinBudget(hits, "\n");
         return result(`${res.messages.length} matching messages, oldest first${dropped ? ` (${dropped} older ones left out)` : ""}:\n${text}\n`);
+      }
+      case "resources": {
+        const res = await conn.resources();
+        return result(formatSchedule(res, params.resource));
+      }
+      case "reserve": {
+        if (!params.resource || params.hours === undefined || !params.purpose?.trim()) {
+          throw new Error("reserve needs `resource`, `hours` and `purpose`.");
+        }
+        const body: Record<string, unknown> = { resource: params.resource, hours: params.hours, purpose: params.purpose };
+        if (params.start !== undefined) body.start = parseStart(params.start);
+        if (params.amount !== undefined) {
+          // GPUs are booked in MiB; the model speaks GB.
+          const target = findResource((await conn.resources()).resources, params.resource);
+          body.amount = target?.unit === "MiB" ? Math.round(params.amount * 1024) : params.amount;
+        }
+        const res = await conn.schedule("/api/reservations", body);
+        return result(`Reserved: ${formatReservation(res.reservation, res.resource)}.${runHint(res)}`);
+      }
+      case "release": {
+        if (!params.reservation && !params.resource) throw new Error("release needs `reservation` or `resource`.");
+        const res = params.reservation
+          ? await conn.schedule(`/api/reservations/${encodeURIComponent(params.reservation)}/release`, {})
+          : await conn.schedule("/api/reservations/current/release", { resource: params.resource });
+        return result(`${res.reservation.state === "cancelled" ? "Cancelled" : "Released"}: ${formatReservation(res.reservation, res.resource)}.`);
+      }
+      case "extend": {
+        if (!params.reservation || params.hours === undefined) throw new Error("extend needs `reservation` and `hours`.");
+        const res = await conn.schedule(`/api/reservations/${encodeURIComponent(params.reservation)}/extend`, { hours: params.hours });
+        return result(`Extended: ${formatReservation(res.reservation, res.resource)}.`);
       }
       default:
         throw new Error(`Unknown op ${JSON.stringify((params as { op?: unknown }).op)}; the ops are ${TOOL_PARAMS[0]?.enum?.join(", ")}.`);

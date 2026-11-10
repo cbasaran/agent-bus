@@ -409,6 +409,17 @@ export class BusDatabase {
       .map(toParticipant);
   }
 
+  /** Creates the built-in agent `id` (no folder, no connection; it writes the server's notices) if missing. */
+  ensureBuiltInAgent(id: string, harness: string, now = Date.now()): ParticipantRecord {
+    this.db
+      .query(
+        `INSERT OR IGNORE INTO participants (id, kind, harness, settings_json, created_at, last_seen_at)
+         VALUES (?1, 'agent', ?2, ?3, ?4, ?4)`
+      )
+      .run(id, harness, JSON.stringify(DEFAULT_AGENT_SETTINGS), now);
+    return this.getParticipant(id) as ParticipantRecord;
+  }
+
   /**
    * Deletes agent `id` if it never wrote a message and is a member of no group conversation (e.g. a scratch
    * omp session that joined and left), with its receipts. Returns whether it was deleted. Callers make sure
