@@ -48,6 +48,12 @@ export interface BusServerOptions {
    * using the plain port. The files are read at startup; a renewed certificate takes effect on restart.
    */
   https?: { port: number; certFile: string; keyFile: string };
+  /**
+   * gpudash's base URL (e.g. http://127.0.0.1:3420): every 30 s the resource schedule reads its
+   * GET /api/observations to see what runs on each GPU (and so registers the GPUs). Without it the schedule
+   * still books, but cannot see use: no idle flags, no unclaimed-use warnings, and no GPUs until registered.
+   */
+  gpudash?: string;
 }
 
 export interface BusServerHandle {
@@ -374,13 +380,32 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
         .filter((a) => a.host !== null && a.path !== null)
         .map((a) => ({ id: a.id, host: a.host as string, path: a.path as string })),
   });
-  const scheduleTimer = setInterval(() => {
+  // Every 30 s: what gpudash sees running, then the rules (overdue, expiry, idle, reclaim, queue handover).
+  const gpudash = options.gpudash?.replace(/\/+$/, "");
+  let observing = false;
+  const observeAndTick = async (): Promise<void> => {
+    if (observing) return;
+    observing = true;
     try {
+      if (gpudash) {
+        try {
+          const res = await fetch(`${gpudash}/api/observations`, { signal: AbortSignal.timeout(10_000) });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          for (const observation of (await res.json()) as Observation[]) schedule.observe(observation);
+        } catch (error) {
+          // The schedule keeps its last view; it flags stale probes after a few minutes.
+          console.error(`gpudash ${gpudash} unreachable: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
       schedule.tick();
     } catch (error) {
       console.error("resource schedule tick failed:", error);
+    } finally {
+      observing = false;
     }
-  }, 30_000);
+  };
+  void observeAndTick();
+  const scheduleTimer = setInterval(() => void observeAndTick(), 30_000);
 
   /** The writer of a schedule request. */
   const actorOf = (body: Record<string, unknown>): Actor => {
@@ -873,10 +898,8 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
   /** The website's files: built `public/<asset>` when at least as new as its `ui/` source, else the source (scripts bundled on the fly). */
   const UI_ASSETS: Record<string, { source: string; type: string }> = {
     "index.html": { source: "index.html", type: "text/html; charset=utf-8" },
-    "resources.html": { source: "resources.html", type: "text/html; charset=utf-8" },
     "styles.css": { source: "styles.css", type: "text/css; charset=utf-8" },
     "app.js": { source: "app.ts", type: "application/javascript; charset=utf-8" },
-    "resources.js": { source: "resources.ts", type: "application/javascript; charset=utf-8" },
   };
   const serveUiAsset = async (asset: string): Promise<Response> => {
     const spec = UI_ASSETS[asset];
@@ -1023,7 +1046,6 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
       }
       if (req.method === "GET") {
         if (pathname === "/" || pathname === "/index.html") return serveUiAsset("index.html");
-        if (pathname === "/resources") return serveUiAsset("resources.html");
         if (/^\/[a-z]+\.(js|css|html)$/.test(pathname)) return serveUiAsset(pathname.slice(1));
       }
       return new Response("Not found", { status: 404 });

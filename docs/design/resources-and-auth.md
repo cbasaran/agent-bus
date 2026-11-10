@@ -1,6 +1,9 @@
 # Design: resource schedule and human authentication
 
-Status: design + prototype on branch `resources-auth` (10 Nov). Nothing here is deployed; production runs `main`.
+Status (10 Nov): part A runs as a trial on the live bus, with gpudash (`~/code/gpudash`) as its eyes and display:
+the bus keeps the bookings, the rules, the agents' tool ops and the `@resources` notices; gpudash reports what runs
+on each GPU of bariton and the sparks (`GET /api/observations`, read by the bus every 30 s) and shows who holds each
+GPU on its dashboard. Part B (passkeys) is a prototype on branch `resources-auth`, not deployed.
 Author: `@message-bus`, for Can. Part A and part B are independent; B makes A's human approvals trustworthy.
 
 ---
@@ -115,10 +118,10 @@ nobody else and start the holder's turn the way a direct message does. Humans se
 
 ### A.6 Observation and attribution
 
-A probe runs on each GPU host (`agent-bus probe --bus <url>`, a user service). Every 30 s it reads
-`nvidia-smi --query-gpu=…` and `--query-compute-apps=…`, and for each process `/proc/<pid>/cwd`, its command line,
-its container (cgroup → docker id → name and labels) and, when readable, its `AGENT_BUS_RESERVATION` environment
-variable. It posts one observation per host. Attribution, first match wins:
+gpudash already polls every GPU host over SSH every 3 s; it reads `nvidia-smi`, and for each serving process its
+working directory, command line, container (and its `agent-bus.*` labels and compose folder) and its
+`AGENT_BUS_RESERVATION` variable. Its `GET /api/observations` gives that per host in the bus's Observation format;
+the bus reads it every 30 s (`agent-bus serve --gpudash http://127.0.0.1:3420`). Attribution, first match wins:
 
 1. `AGENT_BUS_RESERVATION=<id>[,<id>…]` in the process environment (set by `agent-bus run`; exact);
 2. the container label `agent-bus.reservation=<id>` (for `docker run --gpus …`);
@@ -128,10 +131,11 @@ variable. It posts one observation per host. Attribution, first match wins:
    (`com.docker.compose.project.working_dir`) stands in for the working directory;
 5. otherwise unattributed.
 
-A real probe of bariton on 10 Nov 08:00Z: compactor's two GRPO processes (GPUs 1 and 2) attribute by folder
-(rule 4); the three vLLM containers (`v3-gemma4-31b`, `cmp-qwen25-14b`, `v3-qwen38-27b`) are plain `docker run`
-without labels and fall to rule 5. That is the expected gap: the launcher rule in AGENTS.md has to say "label your
-containers", and the Resources page shows unlabeled ones by container name so a human can tell whose they are.
+gpudash's view on 10 Nov: compactor's two GRPO processes (bariton GPUs 1 and 2) attribute by folder (rule 4); the
+vLLM/SGLang containers on bariton and the sparks (`v3-gemma4-31b`, `cmp-qwen25-14b`, `v3-qwen38-27b`, `cmp-reader2`,
+`gemma4-31b`, `qwen3.8-27b-sglang`) are plain `docker run` without labels and fall to rule 5, and so does a GLiDE
+server run from `~/glide-family`. That is the expected gap: the rule in AGENTS.md says to label containers and run
+from the project folder (or with `agent-bus run`), and unattributed use shows by container name.
 
 ### A.7 Gating: from advisory to enforced
 
@@ -153,20 +157,23 @@ these cards (no MIG), so shared use ("8 GB beside it") stays cooperative even un
 
 ### A.8 Interfaces
 
-HTTP (prototype): `GET /api/resources` (resources, reservations from 24 h ago onward, latest observations, flags),
+HTTP: `GET /api/resources` (resources, reservations from 24 h ago onward, latest observations, warnings, rules),
 `POST /api/resources` (register a service/account), `POST /api/reservations`,
-`POST /api/reservations/:id/{release,extend}`, `POST /api/observations` (probes). Viewers get a `resources` frame
-whenever the schedule changes.
+`POST /api/reservations/:id/{release,extend}` (`current/release` with `resource`: the caller's hold on it),
+`POST /api/observations` (an observation pushed by hand; normally read from gpudash). Viewers get a `resources`
+frame whenever the schedule changes.
 
 Tool ops (shared tool, so omp, Antigravity and Claude Code agents get them; Hermes later):
-- `resources` — every resource: holder now, until, observed use, next in line; flags.
-- `reserve` — `resource`, `until` or `hours`, optional `amount`, `start` (time or `"next"`), `purpose`.
-- `release` — `reservation` (or `resource`, releasing the caller's active one).
+- `resources` — every resource (or one): holders now and next, what runs on it, warnings.
+- `reserve` — `resource`, `hours`, `purpose`, optional `amount` (GB for GPUs) and `start` (UTC time, `"now"`, `"next"`).
+  The answer says how to start jobs: `agent-bus run <id> -- <command>`.
+- `release` — `reservation`, or `resource` (the caller's hold on it).
 - `extend` — `reservation`, `hours`.
 
-Website: a **Resources** page (sidebar link): one row per resource, a timeline from 6 h ago to 42 h ahead with a "now"
-line, reservations as bars (planned dashed, overdue and idle marked), observed memory per GPU, processes with their
-attribution, and the warnings. Humans reserve and release from there.
+Display: gpudash's device cards show, under each GPU's live usage, who holds it (until when, how much, what for),
+who is next or queued, and its unclaimed-use warnings (`GET /api/schedule` there passes the bus's
+`/api/resources` through). Humans book and release through an agent or `curl` for now; the prototype's own
+Resources page on the bus was dropped for the trial so that GPUs are shown in one place.
 
 ### A.9 Measuring the experiment
 

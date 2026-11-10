@@ -304,7 +304,7 @@ export class ResourceSchedule {
     for (const [resourceId, gpu] of observed) {
       const label = labelOf.get(resourceId) ?? resourceId;
       if (now - gpu.at > OBSERVATION_FRESH_MS) {
-        warnings.push({ kind: "stale-probe", resourceId, text: `No probe report for ${label} since ${formatUtc(gpu.at)}` });
+        warnings.push({ kind: "stale-probe", resourceId, text: `gpudash has not reported ${label} since ${formatUtc(gpu.at)}` });
         continue;
       }
       const holders = new Set(reservations.filter((r) => r.resourceId === resourceId && (r.state === "active" || r.state === "overdue")).map((r) => r.holder));
@@ -375,7 +375,7 @@ export class ResourceSchedule {
     const host = shortHost(input.host);
     const name = input.name.trim().replace(/\s+/g, "-");
     if (!name) throw new ScheduleError(400, "name is required");
-    if (input.kind === "gpu") throw new ScheduleError(400, "GPUs are registered by their host's probe (agent-bus probe)");
+    if (input.kind === "gpu") throw new ScheduleError(400, "GPUs are registered from gpudash's observations (agent-bus serve --gpudash)");
     const id = `${host}/${input.kind}/${name}`;
     this.db
       .query(

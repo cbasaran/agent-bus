@@ -189,7 +189,7 @@ test("services and accounts are registered by hand and booked by slots", () => {
   schedule.reserve({ from: "alpha", resource: "DeepSeek on spark2", hours: 1, amount: 1, purpose: "eval" }, ALPHA);
   schedule.reserve({ from: "beta", resource: "spark2/service/deepseek", hours: 1, amount: 1, purpose: "eval" }, BETA);
   expect(() => schedule.reserve({ from: "can", resource: "deepseek", hours: 1, amount: 1, purpose: "x" }, CAN)).toThrow(/taken then/);
-  expect(() => schedule.register({ kind: "gpu", host: "x", name: "y" })).toThrow(/probe/);
+  expect(() => schedule.register({ kind: "gpu", host: "x", name: "y" })).toThrow(/gpudash/);
 });
 
 test("agent-bus run: tickets must be active now; the command sees exactly their GPUs", () => {
@@ -215,7 +215,7 @@ afterEach(async () => {
   if (dataDir) rmSync(dataDir, { recursive: true, force: true });
 });
 
-test("over HTTP: probe report, reservation, refusal, and a human's release reaching the holder from @resources", async () => {
+test("over HTTP: an observation, reservation, refusal, and a human's release reaching the holder from @resources", async () => {
   dataDir = mkdtempSync(path.join(tmpdir(), "mb-res-test-"));
   bus = createBusServer({ host: "127.0.0.1", port: 0, dataDir, humans: ["can", "umit"] });
   const delivered: string[] = [];
@@ -247,4 +247,30 @@ test("over HTTP: probe report, reservation, refusal, and a human's release reach
   const listing = (await (await fetch(`${bus.url}/api/resources`)).json()) as ResourcesResponse;
   expect(listing.reservations.find((r) => r.id === id)?.state).toBe("released");
   ws.close();
+});
+
+test("with --gpudash, the bus reads what runs from gpudash's /api/observations (registering the GPUs)", async () => {
+  const gpudash = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: (req) =>
+      new URL(req.url).pathname === "/api/observations"
+        ? Response.json([observation([process({ pid: 7, cwd: "/home/x/code/alpha/runs" })], Date.now())])
+        : new Response("no", { status: 404 }),
+  });
+  try {
+    dataDir = mkdtempSync(path.join(tmpdir(), "mb-res-test-"));
+    bus = createBusServer({ host: "127.0.0.1", port: 0, dataDir, humans: ["can"], gpudash: `http://127.0.0.1:${gpudash.port}/` });
+    const deadline = Date.now() + 4000;
+    let listing: ResourcesResponse | undefined;
+    while (Date.now() < deadline) {
+      listing = (await (await fetch(`${bus.url}/api/resources`)).json()) as ResourcesResponse;
+      if (listing.resources.length > 0) break;
+      await Bun.sleep(50);
+    }
+    expect(listing?.resources.map((r) => r.label)).toEqual(["bariton GPU 2"]);
+    expect(listing?.observed["bariton/gpu/GPU-aaaa1111"]?.processes[0]?.pid).toBe(7);
+  } finally {
+    gpudash.stop(true);
+  }
 });
