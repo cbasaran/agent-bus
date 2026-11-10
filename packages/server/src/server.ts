@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, renameSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
-import { AuthError, clearedCookie, HumanAuth, sessionCookie, type AuthMode } from "./auth";
+import { AuthError, HumanAuth, type AuthMode } from "./auth";
 import {
   baseAgentId,
   ALL_CONVERSATION_ID,
@@ -104,6 +104,8 @@ type SocketData =
       path: string | null;
       name: string | null;
       harness: string | null;
+      /** The agent's token (query `token`); binds or must match its id. */
+      token: string | null;
       /** Assigned on open; "" until joined. */
       id: string;
       /** Latest status this connection reported, when, and when its first report arrived. */
@@ -456,12 +458,32 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
   void observeAndTick();
   const scheduleTimer = setInterval(() => void observeAndTick(), 30_000);
 
+  /** SHA-256 hex of an agent token (the database never holds the token itself). */
+  const tokenHash = (token: string): string => new Bun.CryptoHasher("sha256").update(token).digest("hex");
+
+  /**
+   * Every write's check of its `from`. Agents: an id bound to a token (first join with one) needs that token in
+   * `X-Agent-Token`; the built-in @resources is never written as. Humans: the passkey session rules (auth.ts).
+   * Returns whether a human writer is verified.
+   */
+  const checkWriter = (req: Request, writer: { id: string; kind: "agent" | "human" }): boolean | undefined => {
+    if (writer.kind === "agent") {
+      if (writer.id === RESOURCES_AGENT_ID) throw new HttpError(403, "@resources is the bus's own notices; nobody writes as it");
+      const bound = db.agentTokenHash(writer.id);
+      const given = req.headers.get("x-agent-token");
+      if (bound !== null && (given === null || tokenHash(given) !== bound)) {
+        throw new HttpError(401, `@${writer.id} is bound to an agent token, and this request does not carry it (X-Agent-Token). Nothing was sent.`);
+      }
+    }
+    return auth.checkWriter(req, writer.id, writer.kind);
+  };
+
   /** The writer of a schedule request. Humans who are not signed in (when auth is on) act without human powers. */
   const actorOf = (req: Request, body: Record<string, unknown>): Actor => {
     if (typeof body.from !== "string") throw new HttpError(400, "from must be a participant id");
     const writer = knownParticipant(body.from.trim().toLowerCase());
     if (!writer) throw new HttpError(400, `Unknown participant "${body.from}"`);
-    const verified = auth.checkWriter(req, writer.id, writer.kind);
+    const verified = checkWriter(req, writer);
     return { id: writer.id, kind: writer.kind === "human" && verified === false ? "agent" : writer.kind };
   };
 
@@ -474,9 +496,6 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
     const browser = /Edg|Firefox|Chrome|Safari/.exec(ua)?.[0]?.replace("Edg", "Edge") ?? "browser";
     return `${browser} on ${os}`;
   };
-  const withCookie = (body: unknown, cookie: string): Response =>
-    Response.json(body, { headers: { ...CORS_HEADERS, "Set-Cookie": cookie } });
-
   const handleAuth = async (req: Request, url: URL): Promise<Response> => {
     const { pathname } = url;
     const method = req.method;
@@ -492,16 +511,16 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
     }
     if (method === "POST" && pathname === "/api/auth/register/verify") {
       const result = auth.registerVerify(await readJsonObject(req), deviceLabel(req));
-      return withCookie({ human: result.human }, sessionCookie(result.token));
+      return json({ human: result.human, session: result.token });
     }
     if (method === "POST" && pathname === "/api/auth/login/options") return json(auth.loginOptions());
     if (method === "POST" && pathname === "/api/auth/login/verify") {
       const result = auth.loginVerify(await readJsonObject(req), deviceLabel(req));
-      return withCookie({ human: result.human }, sessionCookie(result.token));
+      return json({ human: result.human, session: result.token });
     }
     if (method === "POST" && pathname === "/api/auth/logout") {
       auth.logout(req);
-      return withCookie({ ok: true }, clearedCookie());
+      return json({ ok: true });
     }
     const me = auth.humanOf(req);
     if (!me) throw new HttpError(401, "Sign in first");
@@ -510,7 +529,7 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
     if (method === "POST" && remove?.[1]) {
       auth.checkWriter(req, me, "human");
       auth.removeCredential(me, decodeURIComponent(remove[1]));
-      return withCookie({ ok: true }, clearedCookie());
+      return json({ ok: true });
     }
     throw new HttpError(404, `No route for ${method} ${pathname}`);
   };
@@ -537,6 +556,18 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
       return;
     }
     const { participant, isNew } = db.joinAgent(identity, data.harness, reservedIds);
+    // An agent id belongs to the first token that joins as it (trust on first use, like ssh host keys).
+    const bound = db.agentTokenHash(participant.id);
+    const given = data.token ? tokenHash(data.token) : null;
+    if (bound !== null && bound !== given) {
+      sendFrame(ws, {
+        type: "error",
+        error: `@${participant.id} is bound to another agent token (another machine or account joined as it first). On the bus's host, \`agent-bus reset-agent ${participant.id}\` frees it.`,
+      });
+      ws.close(4401, "agent token does not match");
+      return;
+    }
+    if (bound === null && given !== null) db.setAgentTokenHash(participant.id, given);
     data.id = participant.id;
     let sockets = agentSockets.get(participant.id);
     if (!sockets) {
@@ -818,7 +849,7 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
     if (!writer) {
       throw new HttpError(400, `Unknown participant "${body.from}". Known ids: ${knownIds().join(", ")}`);
     }
-    const verified = auth.checkWriter(req, writer.id, writer.kind);
+    const verified = checkWriter(req, writer);
     // A reply goes to the conversation of the message it answers (then it is a conversationId post) and quotes it.
     let replyToSeq: number | undefined;
     if (body.replyToSeq !== undefined && body.replyToSeq !== null) {
@@ -922,7 +953,7 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
   const postFile = async (req: Request, url: URL): Promise<{ file: FileRef }> => {
     const from = nonEmptyParam(url, "from");
     const uploader = from ? knownParticipant(from.toLowerCase()) : undefined;
-    if (uploader) auth.checkWriter(req, uploader.id, uploader.kind);
+    if (uploader) checkWriter(req, uploader);
     if (!from || !knownParticipant(from.toLowerCase())) {
       throw new HttpError(400, `Unknown participant "${from ?? ""}". Known ids: ${knownIds().join(", ")}`);
     }
@@ -974,6 +1005,10 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
         "Content-Type": file.mimeType,
         "Content-Length": String(file.size),
         "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`,
+        // Uploaded files never run as the bus's website (an HTML or SVG upload opened in a tab would otherwise act
+        // with the viewer's session): no MIME sniffing, and a sandbox without scripts or same-origin access.
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'",
       },
     });
   };
@@ -984,6 +1019,7 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
     if (!participant || participant.kind !== "agent") {
       throw new HttpError(400, "from must be an agent id; settings are per agent");
     }
+    checkWriter(req, participant);
     if (body.key !== "all") {
       throw new HttpError(400, `Unknown setting "${String(body.key)}". Valid keys: all`);
     }
@@ -1143,6 +1179,7 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
           path: nonEmptyParam(url, "path"),
           name: nonEmptyParam(url, "name"),
           harness: nonEmptyParam(url, "harness"),
+          token: nonEmptyParam(url, "token"),
           id: "",
         };
         if (srv.upgrade(req, { data })) return undefined;

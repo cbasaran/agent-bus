@@ -10,6 +10,7 @@ const USAGE = `Usage: agent-bus serve [--host 0.0.0.0] [--port 7800] [--data-dir
                        [--https-port 7843 --tls-cert FILE --tls-key FILE] [--gpudash URL] [--forget-offline-days 15]
                        [--auth off|optional|required --rp-id HOST [--origin URL]…]
        agent-bus invite HUMAN [--data-dir DIR] [--url https://HOST:7843]
+       agent-bus reset-agent AGENT [--data-dir DIR]
        agent-bus run [--bus URL] RESERVATION[,RESERVATION…] -- COMMAND [ARGS…]
 
 serve:
@@ -28,7 +29,10 @@ serve:
   --origin      A website origin passkeys may be used from (repeat); default https://<rp-id>:<https port>
                 and http://localhost:<port>
 
-invite: a one-time link (10 min) for HUMAN to create a passkey; needs the bus's database, so only bariton's shell can.
+invite: a one-time link (10 min) for HUMAN to create a passkey; needs the bus's database, so only the bus's host can.
+
+reset-agent: unbind AGENT from its agent token (lost token file, agent moved to another machine); the next
+  join claims it again. Needs the bus's database.
 
 run: start COMMAND on the GPUs of active reservations only (CUDA_VISIBLE_DEVICES), marked as theirs.
   --bus defaults to $AGENT_BUS_URL or http://127.0.0.1:${DEFAULT_BUS_PORT}.`;
@@ -110,6 +114,14 @@ export async function runCli(argv: string[]): Promise<number> {
     console.log(USAGE);
     return command === undefined ? 1 : 0;
   }
+  if (command === "reset-agent") {
+    try {
+      return runResetAgent(rest);
+    } catch (error) {
+      console.error(`agent-bus reset-agent: ${error instanceof Error ? error.message : String(error)}`);
+      return 1;
+    }
+  }
   if (command === "invite") {
     try {
       return runInvite(rest);
@@ -143,6 +155,11 @@ export async function runCli(argv: string[]): Promise<number> {
   for (const lanUrl of bus.lanUrls) console.log(`  LAN: ${lanUrl}`);
   for (const httpsUrl of bus.httpsLanUrls ?? []) console.log(`  HTTPS: ${httpsUrl}`);
   console.log(`  data: ${bus.dataDir}`);
+  if ((options.auth?.mode ?? "off") === "off") {
+    console.warn(
+      "  WARNING: --auth off: anyone who can reach this port can write as any human. Use --auth optional (passkeys) and give each human an invite."
+    );
+  }
 
   const { promise, resolve } = Promise.withResolvers<number>();
   const shutdown = (): void => {
@@ -151,6 +168,27 @@ export async function runCli(argv: string[]): Promise<number> {
   process.once("SIGINT", shutdown);
   process.once("SIGTERM", shutdown);
   return promise;
+}
+
+function runResetAgent(args: string[]): number {
+  let dataDir = process.env.AGENT_BUS_DATA_DIR || path.join(homedir(), ".agent-bus");
+  let agent: string | undefined;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i] ?? "";
+    if (arg === "--data-dir") dataDir = args[++i] ?? "";
+    else if (arg.startsWith("--")) throw new Error(`Unknown option "${arg}"`);
+    else agent = arg.replace(/^@/, "").toLowerCase();
+  }
+  if (!agent) throw new Error("Give the agent's id, e.g. agent-bus reset-agent compactor");
+  const dbPath = path.join(dataDir, "message-bus.sqlite");
+  if (!existsSync(dbPath)) throw new Error(`No bus database at ${dbPath}`);
+  const db = new Database(dbPath, { strict: true });
+  db.exec("PRAGMA busy_timeout = 5000;");
+  const changed = db.query("UPDATE participants SET token_hash = NULL WHERE id = ?1 AND kind = 'agent'").run(agent).changes;
+  db.close();
+  if (changed === 0) throw new Error(`No agent @${agent}`);
+  console.log(`@${agent} is free: the next agent that joins as it binds it to its token.`);
+  return 0;
 }
 
 function runInvite(args: string[]): number {

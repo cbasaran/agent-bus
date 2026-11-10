@@ -1,7 +1,9 @@
 // Harness-neutral client for the message bus: one agent connection (WS /ws/agent) with reconnect,
 // in-order delivery handling with acks, receipts for this agent's own messages, and the
 // write/send/set calls. Harness bindings decide how a delivery reaches their session.
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import * as os from "node:os";
 import * as path from "node:path";
 import type {
   ActivityEvent,
@@ -17,6 +19,28 @@ import type {
   ReceiptFrame,
 } from "../../protocol/src/types";
 import type { ReservationResponse, ResourcesResponse } from "../../protocol/src/resources";
+
+/**
+ * This machine account's agent token (`~/.agent-bus/agent-token`, mode 0600; `AGENT_BUS_TOKEN_FILE` overrides),
+ * created on first use. The bus binds an agent id to the first token that joins as it, so nobody else on the
+ * network can join or write as that agent. Agents of one account share it (they could read each other's files anyway).
+ */
+export function agentToken(): string {
+  const file = process.env.AGENT_BUS_TOKEN_FILE || path.join(os.homedir(), ".agent-bus", "agent-token");
+  try {
+    return readFileSync(file, "utf8").trim();
+  } catch {
+    mkdirSync(path.dirname(file), { recursive: true });
+    const token = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64url");
+    try {
+      writeFileSync(file, `${token}\n`, { mode: 0o600, flag: "wx" });
+      return token;
+    } catch {
+      // Another agent of this account created it at the same moment: use theirs.
+      return readFileSync(file, "utf8").trim();
+    }
+  }
+}
 
 export type Delivery = Extract<AgentServerFrame, { type: "deliver" }>;
 
@@ -36,6 +60,8 @@ export interface BusConnectionOptions {
   /** Someone started (true) or stopped (false) watching this agent's live output on the website. */
   onWatch?: (on: boolean) => void;
   onLog?: (line: string) => void;
+  /** The agent token; default this account's (`agentToken()`). */
+  token?: string;
 }
 
 const RECONNECT_MIN_MS = 1000;
@@ -66,9 +92,11 @@ export class BusConnection {
   /** `seen` reports made while disconnected; sent after the next join. */
   private unsentSeen = new Set<number>();
   private readonly baseUrl: string;
+  private readonly token: string;
 
   constructor(private readonly options: BusConnectionOptions) {
     this.baseUrl = options.url.replace(/\/+$/, "");
+    this.token = options.token ?? agentToken();
   }
 
   get connected(): boolean {
@@ -82,6 +110,7 @@ export class BusConnection {
     wsUrl.searchParams.set("harness", this.options.harness);
     if (this.options.path) wsUrl.searchParams.set("path", this.options.path);
     if (this.options.name) wsUrl.searchParams.set("name", this.options.name);
+    wsUrl.searchParams.set("token", this.token);
 
     const socket = new WebSocket(wsUrl.toString());
     this.socket = socket;
@@ -92,8 +121,14 @@ export class BusConnection {
         this.log(`bad frame: ${(err as Error).message}`);
       }
     });
-    socket.addEventListener("close", () => {
+    socket.addEventListener("close", (event) => {
       if (this.socket === socket) this.socket = null;
+      // 4401: the id is bound to another token. Retrying cannot help; the error frame said how to free it.
+      if (event.code === 4401) {
+        this.closed = true;
+        this.log("not on the bus: this agent id belongs to another agent token");
+        return;
+      }
       this.scheduleReconnect();
     });
     socket.addEventListener("error", () => {
@@ -194,7 +229,9 @@ export class BusConnection {
   }
 
   private async request<T>(pathname: string, init: RequestInit): Promise<T> {
-    const res = await fetch(`${this.baseUrl}${pathname}`, init);
+    const headers = new Headers(init.headers);
+    headers.set("X-Agent-Token", this.token);
+    const res = await fetch(`${this.baseUrl}${pathname}`, { ...init, headers });
     const body = (await res.json().catch(() => ({}))) as T & { error?: string };
     if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status} from ${pathname}`);
     return body;

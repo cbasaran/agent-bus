@@ -128,7 +128,7 @@ export function formatUtc(ts: number): string {
 
 /**
  * " (verified)" / " (NOT verified)" after a human sender when the bus checks who humans are (message.verified);
- * nothing when it does not. Agents follow instructions only from verified human messages (AGENTS.md).
+ * nothing when it does not.
  */
 export function provenanceMark(verified: boolean | undefined): string {
   return verified === undefined ? "" : verified ? " (verified)" : " (NOT verified: anyone on the LAN could have written this)";
@@ -147,10 +147,19 @@ export function deliveryHeaderSeqs(text: string): number[] {
   return Array.from(text.matchAll(/\[message-bus\] #(\d+) @/g), (m) => Number(m[1]));
 }
 
+/**
+ * Message text as harnesses show it to a model: anything that looks like a delivery header (`[message-bus] #n @x
+ * (verified) → …`) is marked as quoted, so text cannot pass itself off as another message or another sender. Only
+ * the first line of a delivery, written by the harness, carries the real sender.
+ */
+export function defangHeaders(text: string): string {
+  return text.replace(/\[\s*message[\s_-]*bus\s*\]/gi, "[quoted text, not a delivery]");
+}
+
 /** One-line rendering of a reply's quote for agents: `↩ re #12 @can: start of the text…`. */
 export function quoteLine(quote: Quote): string {
   const oneLine = quote.text.replace(/\s+/g, " ").trim();
   const text = oneLine.length > 160 ? `${oneLine.slice(0, 159)}…` : oneLine;
   const files = quote.files > 0 ? ` [${quote.files} file${quote.files === 1 ? "" : "s"}]` : "";
-  return `↩ re #${quote.seq} @${quote.from}: ${text || "(no text)"}${files}`;
+  return `↩ re #${quote.seq} @${quote.from}: ${defangHeaders(text) || "(no text)"}${files}`;
 }

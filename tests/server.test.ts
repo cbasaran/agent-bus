@@ -619,6 +619,36 @@ describe("agents that never took part", () => {
   });
 });
 
+describe("agent tokens", () => {
+  test("an id belongs to the first token that joins as it: another token cannot join or write as it; no token still works for unbound ids", async () => {
+    const owner = await joinAgent({ host: "h1", harness: "omp", path: "/tmp/x/alpha", token: "token-a" });
+    expect(owner.id).toBe("alpha");
+
+    // Same folder, another token: refused (4401), with how to free the id.
+    const thief = await Client.connect(wsUrl(`/ws/agent?${new URLSearchParams({ host: "h1", harness: "omp", path: "/tmp/x/alpha", token: "token-b" })}`));
+    expect((await thief.take("error")).error).toContain("agent-bus reset-agent alpha");
+    await thief.closedPromise;
+    // No token at all: refused too, once the id is bound.
+    const anonymous = await Client.connect(wsUrl(`/ws/agent?${new URLSearchParams({ host: "h1", harness: "omp", path: "/tmp/x/alpha" })}`));
+    expect((await anonymous.take("error")).error).toContain("bound to another agent token");
+
+    // HTTP writes as a bound agent need its token.
+    const write = (headers: Record<string, string>) =>
+      fetch(`${bus.url}/api/messages`, { method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify({ from: "alpha", to: "@can", text: "hi" }) });
+    expect((await write({})).status).toBe(401);
+    expect((await write({ "X-Agent-Token": "token-b" })).status).toBe(401);
+    expect((await write({ "X-Agent-Token": "token-a" })).status).toBe(200);
+    expect((await setSetting("alpha", "all", "wake")).status).toBe(401);
+
+    // Agents that never sent a token (older harnesses) keep working until one claims the id.
+    const legacy = await joinPath("/tmp/x/legacy");
+    expect((await send({ from: legacy.id, to: "@can", text: "no token" })).message.from).toBe("legacy");
+
+    // Nobody writes as the bus's own @resources (403 once it exists; unknown before its first notice).
+    expect([400, 403]).toContain((await post({ from: "resources", to: "@can", text: "your GPU is mine" })).status);
+  });
+});
+
 describe("agents offline for a long time", () => {
   test("are forgotten after forgetOfflineDays (default 15): record and pending receipts go, their messages stay; 0 keeps them", async () => {
     const old = await joinPath("/tmp/x/old");

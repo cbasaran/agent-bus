@@ -22,8 +22,14 @@ const fromB64url = (text: string): ArrayBuffer => {
   return Uint8Array.from(bin, (c) => c.charCodeAt(0)).buffer;
 };
 
+/** The session the bus hands out at sign-in; the conversations page (app.ts) sends it with every request. */
+const SESSION_KEY = "agent-bus.session";
+
 async function api<T>(path: string, body?: unknown): Promise<T> {
-  const res = await fetch(path, body === undefined ? undefined : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const session = localStorage.getItem(SESSION_KEY);
+  if (session) headers.Authorization = `Bearer ${session}`;
+  const res = await fetch(path, body === undefined ? { headers } : { method: "POST", headers, body: JSON.stringify(body) });
   const data = (await res.json().catch(() => ({}))) as T & { error?: string };
   if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
   return data;
@@ -52,10 +58,11 @@ async function enroll(invite: string): Promise<void> {
   })) as PublicKeyCredential | null;
   if (!credential) throw new Error("No passkey was made");
   const response = credential.response as AuthenticatorAttestationResponse;
-  await api("/api/auth/register/verify", {
+  const done = await api<{ session: string }>("/api/auth/register/verify", {
     invite,
     credential: { id: credential.id, type: credential.type, response: { clientDataJSON: toB64url(response.clientDataJSON), attestationObject: toB64url(response.attestationObject) } },
   });
+  localStorage.setItem(SESSION_KEY, done.session);
   history.replaceState(null, "", "/auth");
 }
 
@@ -66,7 +73,7 @@ async function signIn(): Promise<void> {
   })) as PublicKeyCredential | null;
   if (!credential) throw new Error("No passkey was chosen");
   const response = credential.response as AuthenticatorAssertionResponse;
-  await api("/api/auth/login/verify", {
+  const done = await api<{ session: string }>("/api/auth/login/verify", {
     credential: {
       id: credential.id,
       type: credential.type,
@@ -78,6 +85,7 @@ async function signIn(): Promise<void> {
       },
     },
   });
+  localStorage.setItem(SESSION_KEY, done.session);
 }
 
 async function renderMe(me: string): Promise<void> {
@@ -97,7 +105,13 @@ async function renderMe(me: string): Promise<void> {
       remove.textContent = "Remove";
       remove.addEventListener("click", () => {
         if (!confirm(`Remove the passkey "${c.label}"? You will be signed out everywhere.`)) return;
-        api(`/api/auth/credentials/${encodeURIComponent(c.id)}/remove`, {}).then(() => location.reload(), (err: Error) => (msg.textContent = err.message));
+        api(`/api/auth/credentials/${encodeURIComponent(c.id)}/remove`, {}).then(
+          () => {
+            localStorage.removeItem(SESSION_KEY);
+            location.reload();
+          },
+          (err: Error) => (msg.textContent = err.message)
+        );
       });
       li.append(remove);
       return li;
@@ -144,7 +158,10 @@ async function boot(): Promise<void> {
 }
 
 el("auth-signout-btn").addEventListener("click", () => {
-  void api("/api/auth/logout", {}).then(() => location.reload());
+  void api("/api/auth/logout", {}).finally(() => {
+    localStorage.removeItem(SESSION_KEY);
+    location.reload();
+  });
 });
 
 void boot();

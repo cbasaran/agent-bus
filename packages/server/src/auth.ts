@@ -1,6 +1,8 @@
 // Human authentication with passkeys (docs/design/resources-and-auth.md part B): invites from the shell, passkey
-// enrollment and sign-in, and sessions (a random token in an HttpOnly cookie, stored hashed). The bus then knows a
-// human's message really comes from that human: `verified` on the message, shown to agents and on the website.
+// enrollment and sign-in, and sessions (a random token the website keeps in localStorage and sends as
+// `Authorization: Bearer`, stored hashed here). Not a cookie: browsers send cookies to every port of a host, so a
+// cookie would also reach other services on the bus's host name. The bus then knows a human's message really comes
+// from that human: `verified` on the message, shown to agents and on the website.
 import type { Database } from "bun:sqlite";
 import { createHash, randomBytes } from "node:crypto";
 import {
@@ -29,7 +31,6 @@ const DAY = 24 * 60 * MIN;
 const INVITE_MS = 10 * MIN;
 const CHALLENGE_MS = 5 * MIN;
 const SESSION_MS = 30 * DAY;
-export const SESSION_COOKIE = "bus_session";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS auth_humans (
@@ -254,7 +255,7 @@ export class HumanAuth {
     return t;
   }
 
-  /** The signed-in human of a request (session cookie), if any. Sessions slide: each use extends them to 30 days. */
+  /** The signed-in human of a request (`Authorization: Bearer <session>`), if any. Sessions slide: each use extends them to 30 days. */
   humanOf(req: Request): string | undefined {
     const t = sessionToken(req);
     if (!t) return undefined;
@@ -268,15 +269,14 @@ export class HumanAuth {
   }
 
   /**
-   * The checks every write makes for its `from`: a signed-in browser may only write as its human, and only from the
-   * bus's own pages (Origin); with `required`, a human id needs a session. Returns whether `from` is verified.
+   * The checks every write makes for its `from`: a signed-in browser may only write as its human; with `required`, a
+   * human id needs a session. Returns whether `from` is verified. (No Origin check: the session is not a cookie, so
+   * another site cannot make a browser send it.)
    */
   checkWriter(req: Request, from: string, kind: "agent" | "human"): boolean | undefined {
     if (this.mode === "off") return undefined;
     const signedIn = this.humanOf(req);
     if (signedIn !== undefined) {
-      const origin = req.headers.get("origin");
-      if (origin !== null && !this.options.origins().includes(origin)) throw new AuthError(403, `Requests from ${origin} may not use a bus session`);
       if (signedIn !== from) throw new AuthError(403, `You are signed in as ${signedIn}, not ${from}`);
       return true;
     }
@@ -309,19 +309,6 @@ export class HumanAuth {
 }
 
 function sessionToken(req: Request): string | undefined {
-  const cookie = req.headers.get("cookie");
-  if (!cookie) return undefined;
-  for (const part of cookie.split(";")) {
-    const [name, ...rest] = part.trim().split("=");
-    if (name === SESSION_COOKIE) return rest.join("=") || undefined;
-  }
-  return undefined;
-}
-
-export function sessionCookie(t: string): string {
-  return `${SESSION_COOKIE}=${t}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=${SESSION_MS / 1000}`;
-}
-
-export function clearedCookie(): string {
-  return `${SESSION_COOKIE}=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0`;
+  const header = req.headers.get("authorization");
+  return /^Bearer (\S+)$/.exec(header ?? "")?.[1];
 }

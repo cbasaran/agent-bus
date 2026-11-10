@@ -156,8 +156,14 @@ const state = {
 
 // ---- HTTP ----
 
+/** The passkey session (set by the sign-in page, /auth), sent with every request so writes count as verified. */
+const SESSION_KEY = "agent-bus.session";
+
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, init);
+  const session = localStorage.getItem(SESSION_KEY);
+  const headers = new Headers(init?.headers);
+  if (session) headers.set("Authorization", `Bearer ${session}`);
+  const res = await fetch(path, { ...init, headers });
   const text = await res.text();
   let body: unknown = null;
   if (text) {

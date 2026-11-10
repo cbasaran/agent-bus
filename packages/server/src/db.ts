@@ -284,6 +284,11 @@ export class BusDatabase {
     if (!conversationColumns.some((c) => c.name === "thread_key")) {
       this.db.exec("ALTER TABLE conversations ADD COLUMN thread_key TEXT");
     }
+    // Databases created before agent tokens lack the column (null: the agent id is not bound to a token yet).
+    const participantColumns = this.db.query<{ name: string }, []>("PRAGMA table_info(participants)").all();
+    if (!participantColumns.some((c) => c.name === "token_hash")) {
+      this.db.exec("ALTER TABLE participants ADD COLUMN token_hash TEXT");
+    }
     this.seed(humans, now);
     this.mergeThreads();
   }
@@ -426,6 +431,16 @@ export class BusDatabase {
       )
       .run(id, harness, JSON.stringify(DEFAULT_AGENT_SETTINGS), now);
     return this.getParticipant(id) as ParticipantRecord;
+  }
+
+  /** SHA-256 (hex) of the token agent `id` is bound to, or null when it is not bound yet. */
+  agentTokenHash(id: string): string | null {
+    return this.db.query<{ token_hash: string | null }, [string]>("SELECT token_hash FROM participants WHERE id = ?1").get(id)?.token_hash ?? null;
+  }
+
+  /** Binds agent `id` to a token (hash), or unbinds it (null): the next join with any token claims it again. */
+  setAgentTokenHash(id: string, tokenHash: string | null): boolean {
+    return this.db.query("UPDATE participants SET token_hash = ?2 WHERE id = ?1 AND kind = 'agent'").run(id, tokenHash).changes > 0;
   }
 
   /**
