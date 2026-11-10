@@ -23,6 +23,8 @@ const PROFILE_KEY = "agent-bus.profile";
 /** Per-profile read markers: conversation id → createdAt of the newest message read; "*" = first visit. */
 const READ_KEY_PREFIX = "agent-bus.read.";
 const UNREAD_ONLY_KEY = "agent-bus.unreadOnly";
+/** Show offline agents and the conversations with them (off by default: you cannot write to them anyway). */
+const INCLUDE_OFFLINE_KEY = "agent-bus.includeOffline";
 const PAGE_SIZE = 100;
 const MAX_MENTIONS = 8;
 const RECONNECT_MIN_MS = 1000;
@@ -67,6 +69,7 @@ const dom = {
   profileSelect: el<HTMLSelectElement>("profile-select"),
   newGroupBtn: el<HTMLButtonElement>("new-group-btn"),
   unreadBtn: el<HTMLButtonElement>("unread-btn"),
+  offlineBtn: el<HTMLButtonElement>("offline-btn"),
   conversationList: el<HTMLUListElement>("conversation-list"),
   agentList: el<HTMLUListElement>("agent-list"),
   agentCount: el<HTMLSpanElement>("agent-count"),
@@ -140,6 +143,7 @@ const state = {
   filter: new Set<string>(),
   /** Show only conversations with unread messages (the open one stays). Remembered in this browser. */
   unreadOnly: localStorage.getItem(UNREAD_ONLY_KEY) === "1",
+  includeOffline: localStorage.getItem(INCLUDE_OFFLINE_KEY) === "1",
   readAt: {} as Record<string, number>,
   view: { kind: "conversation", id: ALL_CONVERSATION_ID } as View,
   staged: [] as File[],
@@ -210,12 +214,39 @@ function sortedConversations(): Conversation[] {
   return all ? [all, ...groups] : groups;
 }
 
-/** Agent filter: `@all` always passes, a group when every filtered agent is a member. Unread filter: unread or open. */
+/** An agent of this conversation is offline (or no longer on the bus). */
+function hasOfflineAgent(conv: Conversation): boolean {
+  if (conv.kind === "all") return false;
+  return conv.members.some((id) => {
+    if (state.humans.includes(id)) return false;
+    return !state.participants.find((p) => p.id === id)?.online;
+  });
+}
+
+/**
+ * Agent filter: `@all` always passes, a group when every filtered agent is a member. Unread filter: unread or open.
+ * Without "Include offline", conversations with an offline agent are hidden (the open one stays).
+ */
 function passesFilter(conv: Conversation): boolean {
   if (state.unreadOnly && (state.unread.get(conv.id) ?? 0) === 0 && !isCurrent(conv.id)) return false;
+  if (!state.includeOffline && !isCurrent(conv.id) && hasOfflineAgent(conv)) return false;
   if (conv.kind === "all" || state.filter.size === 0) return true;
   return [...state.filter].every((id) => conv.members.includes(id));
 }
+
+function renderOfflineToggle(): void {
+  dom.offlineBtn.classList.toggle("on", state.includeOffline);
+  dom.offlineBtn.setAttribute("aria-pressed", String(state.includeOffline));
+  dom.offlineBtn.title = state.includeOffline
+    ? "Showing offline agents and their conversations — click to hide them"
+    : "Also show offline agents and the conversations with them (you cannot write to them)";
+}
+
+dom.offlineBtn.addEventListener("click", () => {
+  state.includeOffline = !state.includeOffline;
+  localStorage.setItem(INCLUDE_OFFLINE_KEY, state.includeOffline ? "1" : "0");
+  renderSidebar();
+});
 
 function renderUnreadToggle(): void {
   dom.unreadBtn.classList.toggle("on", state.unreadOnly);
@@ -977,6 +1008,7 @@ function renderAll(): void {
 function renderSidebar(): void {
   renderBackBadge();
   renderUnreadToggle();
+  renderOfflineToggle();
   renderConversationList();
   renderAgentList();
   renderAgentPanel();
@@ -1076,14 +1108,15 @@ function currentDirectAgent(): string | undefined {
 }
 
 function renderAgentList(): void {
-  const list = agents();
+  const all = agents();
+  const list = state.includeOffline ? all : all.filter((a) => a.online || a.id === currentDirectAgent());
   const hosts = new Set(list.map((a) => a.host ?? ""));
   const showHost = hosts.size > 1;
   const active = currentDirectAgent();
-  const online = list.filter((a) => a.online).length;
-  dom.agentCount.textContent = list.length > 0 ? `${online}/${list.length} online` : "";
+  const online = all.filter((a) => a.online).length;
+  dom.agentCount.textContent = all.length > 0 ? `${online}/${all.length} online` : "";
   if (list.length === 0) {
-    dom.agentList.replaceChildren(h("li", "side-empty", "No agents have joined yet."));
+    dom.agentList.replaceChildren(h("li", "side-empty", all.length === 0 ? "No agents have joined yet." : "No agents online."));
     return;
   }
   dom.agentList.replaceChildren(

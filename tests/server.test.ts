@@ -314,6 +314,7 @@ describe("delivery", () => {
     expect(groups[0]?.members).toEqual(["alpha", "can", "umit"]);
     const page = (await (await fetch(`${bus.url}/api/conversations/g_old/messages`)).json()) as MessagesResponse;
     expect(page.messages.map((m) => m.text)).toEqual(["kept thread", "old thread"]);
+    await joinPath("/tmp/x/alpha"); // only online agents get messages
     const byOldId = await send({ from: "umit", conversationId: "g_old", text: "still works" });
     expect(byOldId.conversation.id).toBe(kept.conversation.id);
   });
@@ -366,7 +367,7 @@ describe("delivery", () => {
 });
 
 describe("backlog", () => {
-  test("missed messages arrive on rejoin, acked ones are not re-sent", async () => {
+  test("only online agents get messages: @all skips an offline agent, a message to it is refused; unacked ones come back on rejoin", async () => {
     const alpha = await joinPath("/tmp/x/alpha");
     await joinPath("/tmp/x/beta");
     await send({ from: "alpha", to: "@can", text: "taking part" }); // agents that never took part are forgotten on logoff
@@ -375,18 +376,20 @@ describe("backlog", () => {
     const seen = await alpha.client.take("deliver");
     expect(seen.message.id).toBe(acked.message.id);
     alpha.client.send({ type: "ack", seq: seen.message.seq });
+    // Delivered but not acknowledged when the connection drops: it comes again on rejoin.
+    const unacked = await send({ from: "umit", to: "@alpha", text: "not acked" });
+    expect((await alpha.client.take("deliver")).message.id).toBe(unacked.message.id);
     await leave(alpha.client);
 
-    const missedAll = await send({ from: "umit", to: "@all", text: "while away" });
-    const missedGroup = await send({ from: "beta", to: "@alpha", text: "dm while away" });
-    await send({ from: "beta", to: "@umit", text: "not for alpha" });
+    const whileAway = await send({ from: "umit", to: "@all", text: "while away" });
+    expect(whileAway.message.receipts.map((r) => r.to)).toEqual(["beta"]);
+    const refused = await post({ from: "beta", to: "@alpha", text: "dm while away" });
+    expect(refused.status).toBe(409);
+    expect(await errorOf(refused)).toContain("@alpha is offline");
+    expect((await post({ from: "umit", conversationId: unacked.conversation.id, text: "reply while away" })).status).toBe(409);
 
     const back = await joinPath("/tmp/x/alpha");
-    const first = await back.client.take("deliver");
-    const second = await back.client.take("deliver");
-    expect([first.message.id, second.message.id]).toEqual([missedAll.message.id, missedGroup.message.id]);
-    expect(second.replyTo).toBe("@beta");
-
+    expect((await back.client.take("deliver")).message.id).toBe(unacked.message.id);
     const sentinel = await send({ from: "can", to: "@all", text: "live again" });
     expect((await back.client.take("deliver")).message.id).toBe(sentinel.message.id);
   });
@@ -538,11 +541,12 @@ describe("delivery receipts", () => {
     expect((await viewer.take("receipt")).seq).toBe(third.seq); // the repeated seen produced nothing in between
   });
 
-  test("@all receipts list every agent but the writer; waitMs returns once all are delivered", async () => {
+  test("@all receipts list every online agent but the writer; waitMs returns once all are delivered", async () => {
     const alpha = await joinPath("/tmp/x/alpha");
     const beta = await joinPath("/tmp/x/beta");
-    await send({ from: "beta", to: "@can", text: "taking part" });
-    await leave(beta.client);
+    const gone = await joinPath("/tmp/x/gone");
+    await send({ from: "gone", to: "@can", text: "taking part" });
+    await leave(gone.client);
 
     const { message } = await send({ from: "can", to: "@all", text: "hello all" });
     expect(message.receipts.map((r) => r.to)).toEqual(["alpha", "beta"]);
@@ -553,8 +557,7 @@ describe("delivery receipts", () => {
     expect(partial.receipts.map((r) => [r.to, r.deliveredAt !== null])).toEqual([["alpha", true], ["beta", false]]);
 
     const waiting = getMessage(message.seq, 10_000);
-    const betaBack = await joinPath("/tmp/x/beta");
-    betaBack.client.send({ type: "ack", seq: (await betaBack.client.take("deliver")).message.seq });
+    beta.client.send({ type: "ack", seq: (await beta.client.take("deliver")).message.seq });
     expect((await waiting).receipts.every((r) => r.deliveredAt !== null)).toBe(true);
 
     expect((await fetch(`${bus.url}/api/messages/999`)).status).toBe(404);

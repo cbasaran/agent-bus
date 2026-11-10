@@ -304,6 +304,18 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
           .filter((p): p is ParticipantRecord => p !== null && p.kind === "agent")
     ).filter((p) => p.id !== writerId);
 
+
+  const isOnline = (id: string): boolean => (agentSockets.get(id)?.size ?? 0) > 0;
+
+  /** Messages go only to agents that are online now (Can, #4105): a group with an offline agent is refused. */
+  const refuseOffline = (ids: readonly string[], writerId: string): void => {
+    const offline = ids.filter((id) => id !== writerId && db.getParticipant(id)?.kind === "agent" && !isOnline(id));
+    if (offline.length === 0) return;
+    throw new HttpError(
+      409,
+      `${offline.map((id) => `@${id}`).join(", ")} ${offline.length > 1 ? "are" : "is"} offline; messages go only to agents that are online. Nothing was sent.`
+    );
+  };
   const publishMessage = (message: Message, conversation: Conversation): void => {
     for (const { to } of message.receipts) {
       const recipient = db.getParticipant(to);
@@ -777,6 +789,7 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
         }
         const addressed = Array.from(new Set([writer.id, ...parsed.ids])).sort();
         if (addressed.length < 2) throw new HttpError(400, "Cannot write only to yourself");
+        refuseOffline(addressed, writer.id);
         conversation = db.getOrCreateGroup(addressed, now);
       }
     } else {
@@ -784,6 +797,7 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
       const existing = db.getConversation(body.conversationId);
       if (!existing) throw new HttpError(404, `Unknown conversation "${body.conversationId}"`);
       conversation = existing;
+      if (conversation.kind === "group") refuseOffline(conversation.addressed, writer.id);
       if (conversation.kind === "group") {
         if (writer.kind === "agent" && !conversation.members.includes(writer.id)) {
           throw new HttpError(403, `${writer.id} is not in conversation ${conversation.id}`);
@@ -801,7 +815,11 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
       text,
       files,
       createdAt: now,
-      recipients: recipientsFor(conversation, writer.id).map((p) => p.id),
+      // Only agents connected now: @all skips offline ones (they would wait for it forever, e.g. a test agent
+      // that never comes back), and group posts with an offline agent were refused above.
+      recipients: recipientsFor(conversation, writer.id)
+        .filter((p) => isOnline(p.id))
+        .map((p) => p.id),
       replyToSeq,
     });
     if (writer.kind === "human") db.touchParticipant(writer.id, now);

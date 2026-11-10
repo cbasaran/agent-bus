@@ -275,29 +275,16 @@ test("subagent sessions do not join and cannot use the tool", async () => {
   await expect(sub.run({ op: "write", to: "@alpha", message: "x" })).rejects.toThrow(/not on the message bus/);
 });
 
-test("write reports recipients that are offline, then tells the writer quietly when they receive it", async () => {
+test("write to an offline agent is refused and nothing is stored", async () => {
   const alpha = await startSession("alpha");
   const gamma = await rawAgent("gamma");
   await post({ from: "gamma", to: "@can", text: "taking part" }); // agents that never took part are forgotten on logoff
   gamma.ws.close();
   await participantsWhere((ps) => ps.some((p) => p.id === "gamma" && !p.online));
 
-  process.env.AGENT_BUS_RECEIPT_WAIT_MS = "50";
-  try {
-    const wrote = await alpha.run({ op: "write", to: "@gamma", message: "are you there" });
-    expect(wrote.content[0]!.text).toContain(
-      "not delivered yet (offline or reconnecting): @gamma. You will be told when they receive it."
-    );
-  } finally {
-    delete process.env.AGENT_BUS_RECEIPT_WAIT_MS;
-  }
-
-  const back = await rawAgent("gamma");
-  await back.delivered("are you there");
-  expect(await alpha.injectedWith("@gamma has now received your message")).toMatchObject({
-    via: "message",
-    deliverAs: "nextTurn",
-  });
+  await expect(alpha.run({ op: "write", to: "@gamma", message: "are you there" })).rejects.toThrow(/@gamma is offline.*Nothing was sent/);
+  const search = (await (await fetch(`${bus.url}/api/search?from=can&q=are%20you%20there&scope=all`)).json()) as { messages: unknown[] };
+  expect(search.messages).toHaveLength(0);
 });
 
 test("a delivery is reported seen when its text reaches the model, not when it is queued", async () => {
