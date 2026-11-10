@@ -1257,13 +1257,13 @@ ul.md-list ul.md-list { list-style: circle; }
   min-width: 0;
 }
 
-/* The grip above the message box: drag it to set the box's height (touch and mouse). */
+/* The grip above the message box (as on Hilde's sheet): a visible pill with a finger-sized target. */
 .composer-grip {
   display: flex;
   align-items: center;
   justify-content: center;
-  height: 14px;
-  margin: -10px 0 2px;
+  height: 22px;
+  margin: -10px 0 0;
   cursor: ns-resize;
   touch-action: none;
 }
@@ -1271,15 +1271,17 @@ ul.md-list ul.md-list { list-style: circle; }
 .composer-grip::before {
   content: "";
   width: 40px;
-  height: 4px;
-  border-radius: 2px;
-  background: var(--border);
+  height: 5px;
+  border-radius: 3px;
+  background: var(--muted);
+  opacity: 0.7;
 }
 
 .composer-grip:hover::before,
 .composer-grip:focus-visible::before,
 .composer-grip.dragging::before {
-  background: var(--muted);
+  background: var(--text);
+  opacity: 1;
 }
 
 .composer-grip:focus-visible {
@@ -1634,8 +1636,17 @@ ul.md-list ul.md-list { list-style: circle; }
     background: var(--panel);
   }
 
+  /* A sheet with the grip on top, as on Hilde: pull the line up for a taller box, down for a shorter one. */
   .composer {
-    padding: 6px 8px;
+    padding: 0 8px 6px;
+    border-top: 1px solid var(--border);
+    border-radius: 14px 14px 0 0;
+    background: var(--panel-raised);
+  }
+
+  .composer-grip {
+    height: 26px;
+    margin: 0;
   }
 
   .send-btn {
