@@ -54,6 +54,8 @@ export interface BusServerOptions {
    * still books, but cannot see use: no idle flags, no unclaimed-use warnings, and no GPUs until registered.
    */
   gpudash?: string;
+  /** Agents offline for this many days are forgotten (participant record and their pending receipts). 0: never. Default 15. */
+  forgetOfflineDays?: number;
 }
 
 export interface BusServerHandle {
@@ -304,18 +306,34 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
           .filter((p): p is ParticipantRecord => p !== null && p.kind === "agent")
     ).filter((p) => p.id !== writerId);
 
-
   const isOnline = (id: string): boolean => (agentSockets.get(id)?.size ?? 0) > 0;
 
-  /** Messages go only to agents that are online now (Can, #4105): a group with an offline agent is refused. */
+  /**
+   * Messages go only to agents that are online now (Can, #4105): a group with an offline agent is refused, also one
+   * whose agent was forgotten after a long time offline.
+   */
   const refuseOffline = (ids: readonly string[], writerId: string): void => {
-    const offline = ids.filter((id) => id !== writerId && db.getParticipant(id)?.kind === "agent" && !isOnline(id));
+    const offline = ids.filter((id) => id !== writerId && !humanSet.has(id) && !isOnline(id));
     if (offline.length === 0) return;
     throw new HttpError(
       409,
       `${offline.map((id) => `@${id}`).join(", ")} ${offline.length > 1 ? "are" : "is"} offline; messages go only to agents that are online. Nothing was sent.`
     );
   };
+
+  /** Agents offline for `forgetOfflineDays` days are forgotten (0: never). Checked at start and every hour. */
+  const forgetOfflineDays = options.forgetOfflineDays ?? 15;
+  const forgetOffline = (): void => {
+    if (forgetOfflineDays <= 0) return;
+    const keep = new Set([...agentSockets.keys(), RESOURCES_AGENT_ID]);
+    const gone = db.forgetAgentsSeenBefore(Date.now() - forgetOfflineDays * 24 * 3600_000, keep);
+    if (gone.length === 0) return;
+    console.log(`forgot agents offline for more than ${forgetOfflineDays} days: ${gone.join(", ")}`);
+    broadcastParticipants();
+  };
+  forgetOffline();
+  const forgetTimer = setInterval(forgetOffline, 3600_000);
+
   const publishMessage = (message: Message, conversation: Conversation): void => {
     for (const { to } of message.receipts) {
       const recipient = db.getParticipant(to);
@@ -1123,6 +1141,7 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
       clearTimeout(viewerParticipantsTimer);
       clearTimeout(resourcesTimer);
       clearInterval(scheduleTimer);
+      clearInterval(forgetTimer);
       await Promise.all([server.stop(true), secure?.stop(true)]);
       agentSockets.clear();
       viewers.clear();

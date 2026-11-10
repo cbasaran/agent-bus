@@ -442,6 +442,26 @@ export class BusDatabase {
   }
 
   /**
+   * Agents last seen before `before` (offline since then): their participant row (settings, status) and the receipts
+   * addressed to them are deleted. Messages they wrote and their conversations stay, so history reads the same; if
+   * the folder joins again it gets an id by the usual rule (the same one when the name is still free).
+   */
+  forgetAgentsSeenBefore(before: number, keep: ReadonlySet<string>): string[] {
+    return this.db.transaction((): string[] => {
+      const ids = this.db
+        .query<{ id: string }, [number]>("SELECT id FROM participants WHERE kind = 'agent' AND last_seen_at < ?1")
+        .all(before)
+        .map((r) => r.id)
+        .filter((id) => !keep.has(id));
+      for (const id of ids) {
+        this.db.query("DELETE FROM receipts WHERE recipient = ?1").run(id);
+        this.db.query("DELETE FROM participants WHERE id = ?1").run(id);
+      }
+      return ids;
+    })();
+  }
+
+  /**
    * Finds or creates the agent for `identity`. A new agent takes its folder name (or name) if free, else
    * `base@<first differing part of its canonical address>` (see `qualifiedAgentId`), else a numeric suffix.
    * Ids held by humans or listed in `reservedIds` count as taken.

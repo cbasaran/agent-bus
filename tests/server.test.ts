@@ -619,6 +619,39 @@ describe("agents that never took part", () => {
   });
 });
 
+describe("agents offline for a long time", () => {
+  test("are forgotten after forgetOfflineDays (default 15): record and pending receipts go, their messages stay; 0 keeps them", async () => {
+    const old = await joinPath("/tmp/x/old");
+    const recent = await joinPath("/tmp/x/recent");
+    const wrote = await send({ from: "old", to: "@can", text: "my last words" });
+    await send({ from: "recent", to: "@can", text: "still around" });
+    await leave(old.client);
+    await leave(recent.client);
+    await bus.stop();
+    const raw = new Database(path.join(dataDir, "message-bus.sqlite"));
+    const day = 24 * 3600_000;
+    raw.query("UPDATE participants SET last_seen_at = ?2 WHERE id = ?1").run("old", Date.now() - 16 * day);
+    raw.query("UPDATE participants SET last_seen_at = ?2 WHERE id = ?1").run("recent", Date.now() - 14 * day);
+    raw.query("INSERT INTO receipts (seq, recipient, delivered_at) VALUES (?1, 'old', NULL)").run(wrote.message.seq);
+    raw.close();
+    const agentIds = async () => (await state()).participants.filter((p) => p.kind === "agent").map((p) => p.id);
+
+    bus = createBusServer({ host: "127.0.0.1", port: 0, dataDir, humans: ["can", "umit"], forgetOfflineDays: 0 });
+    expect(await agentIds()).toEqual(["old", "recent"]);
+    await bus.stop();
+
+    bus = createBusServer({ host: "127.0.0.1", port: 0, dataDir, humans: ["can", "umit"] });
+    expect(await agentIds()).toEqual(["recent"]);
+    const kept = (await (await fetch(`${bus.url}/api/messages/${wrote.message.seq}`)).json()) as { message: Message };
+    expect(kept.message.text).toBe("my last words");
+    expect(kept.message.receipts.map((r) => r.to)).toEqual([]);
+    // Its conversation is still there, but nobody can write to the forgotten agent.
+    const reply = await post({ from: "can", conversationId: wrote.conversation.id, text: "hello?" });
+    expect(reply.status).toBe(409);
+    expect(await errorOf(reply)).toContain("@old is offline");
+  });
+});
+
 describe("reply quotes", () => {
   test("a replyToSeq message carries a quote of the original, in pages, deliveries and after restart", async () => {
     const alpha = await joinPath("/tmp/x/alpha");

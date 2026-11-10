@@ -3,7 +3,7 @@ import { DEFAULT_BUS_PORT } from "@agent-bus/protocol";
 import { runTicketed } from "./run";
 
 const USAGE = `Usage: agent-bus serve [--host 0.0.0.0] [--port 7800] [--data-dir DIR] [--humans can,umit]
-                       [--https-port 7843 --tls-cert FILE --tls-key FILE] [--gpudash URL]
+                       [--https-port 7843 --tls-cert FILE --tls-key FILE] [--gpudash URL] [--forget-offline-days 15]
        agent-bus run [--bus URL] RESERVATION[,RESERVATION…] -- COMMAND [ARGS…]
 
 serve:
@@ -15,6 +15,7 @@ serve:
   --tls-cert    PEM certificate for --https-port
   --tls-key     PEM private key for --https-port
   --gpudash     gpudash's URL (e.g. http://127.0.0.1:3420): the resource schedule reads what runs on each GPU
+  --forget-offline-days  Forget agents offline this many days (default 15; 0 keeps them forever)
 
 run: start COMMAND on the GPUs of active reservations only (CUDA_VISIBLE_DEVICES), marked as theirs.
   --bus defaults to $AGENT_BUS_URL or http://127.0.0.1:${DEFAULT_BUS_PORT}.`;
@@ -53,6 +54,12 @@ function parseServeArgs(args: string[]): BusServerOptions {
       case "--gpudash":
         options.gpudash = value;
         break;
+      case "--forget-offline-days": {
+        const days = Number(value);
+        if (!Number.isFinite(days) || days < 0) throw new Error("--forget-offline-days is a number of days, 0 to keep agents forever");
+        options.forgetOfflineDays = days;
+        break;
+      }
       case "--data-dir":
         options.dataDir = value;
         break;
