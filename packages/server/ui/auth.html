@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sign in · Agent Bus</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="res-page">
+    <header class="topbar">
+      <a class="brand" href="/">
+        <span class="brand-mark">⇄</span>
+        <span class="brand-name">Agent Bus</span>
+      </a>
+      <span class="res-crumb">Sign in <span class="res-experimental">experimental</span></span>
+    </header>
+    <main class="res-main auth-main">
+      <section id="auth-off" class="auth-card" hidden>
+        <h2>Sign-in is off on this bus</h2>
+        <p>The bus trusts the name you pick. To turn passkeys on: <code>agent-bus serve --auth optional --rp-id &lt;host name&gt;</code>.</p>
+      </section>
+
+      <section id="auth-insecure" class="auth-card" hidden>
+        <h2>Open this page over https</h2>
+        <p>Passkeys work only on a secure page. Use <a id="auth-secure-link" href="#"></a>.</p>
+      </section>
+
+      <section id="auth-enroll" class="auth-card" hidden>
+        <h2>Create your passkey</h2>
+        <p>This link is for <strong id="auth-enroll-human"></strong> and works once, for 10 minutes. Your device (Face ID, Touch ID, or its PIN) keeps the key; the bus stores only its public half.</p>
+        <button id="auth-enroll-btn" type="button" class="btn btn-primary">Create passkey</button>
+      </section>
+
+      <section id="auth-signin" class="auth-card" hidden>
+        <h2>Sign in</h2>
+        <p>With a passkey you made for this bus. Without one, ask Can for an invite link (<code>agent-bus invite &lt;your name&gt;</code> on bariton).</p>
+        <button id="auth-signin-btn" type="button" class="btn btn-primary">Sign in with a passkey</button>
+      </section>
+
+      <section id="auth-me" class="auth-card" hidden>
+        <h2>Signed in as <span id="auth-me-name"></span></h2>
+        <p>Your messages show ✓ and reach agents as “(verified)”. You stay signed in on this browser for 30 days after you last used it.</p>
+        <h3>Your passkeys</h3>
+        <ul id="auth-credentials" class="auth-list"></ul>
+        <p class="auth-note">Removing a passkey also signs you out everywhere (in case a lost device had a session).</p>
+        <button id="auth-signout-btn" type="button" class="btn">Sign out on this browser</button>
+        <a href="/" class="link-btn">Back to the conversations</a>
+      </section>
+
+      <div id="auth-msg" class="res-msg" role="status"></div>
+    </main>
+  </div>
+  <script type="module" src="/auth.js"></script>
+</body>
+</html>

@@ -48,6 +48,8 @@ export interface NewMessage {
   recipients: string[];
   /** The message this one replies to (same conversation). */
   replyToSeq?: number;
+  /** Human messages while authentication is on: written from a signed-in session (true) or not (false). */
+  verified?: boolean;
 }
 
 interface ReceiptRow {
@@ -88,6 +90,7 @@ interface MessageRow {
   files_json: string;
   created_at: number;
   reply_to_seq: number | null;
+  verified: number | null;
 }
 
 interface FileRow {
@@ -242,6 +245,7 @@ function toMessage(row: MessageRow, receipts: Receipt[], quote: Quote | undefine
     createdAt: row.created_at,
     receipts,
     ...(quote ? { quote } : {}),
+    ...(row.verified === null || row.verified === undefined ? {} : { verified: row.verified === 1 }),
   };
 }
 
@@ -270,6 +274,10 @@ export class BusDatabase {
     const messageColumns = this.db.query<{ name: string }, []>("PRAGMA table_info(messages)").all();
     if (!messageColumns.some((c) => c.name === "reply_to_seq")) {
       this.db.exec("ALTER TABLE messages ADD COLUMN reply_to_seq INTEGER");
+    }
+    // Databases created before human authentication lack the column (null: written while it was off).
+    if (!messageColumns.some((c) => c.name === "verified")) {
+      this.db.exec("ALTER TABLE messages ADD COLUMN verified INTEGER");
     }
     // Databases created before one-thread-per-agent-set lack the column (filled in by mergeThreads).
     const conversationColumns = this.db.query<{ name: string }, []>("PRAGMA table_info(conversations)").all();
@@ -663,8 +671,8 @@ export class BusDatabase {
     return this.db.transaction((): Message => {
       const result = this.db
         .query(
-          `INSERT INTO messages (id, conversation_id, from_id, from_kind, text, files_json, created_at, reply_to_seq)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`
+          `INSERT INTO messages (id, conversation_id, from_id, from_kind, text, files_json, created_at, reply_to_seq, verified)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`
         )
         .run(
           id,
@@ -674,7 +682,8 @@ export class BusDatabase {
           input.text,
           JSON.stringify(input.files),
           input.createdAt,
-          input.replyToSeq ?? null
+          input.replyToSeq ?? null,
+          input.verified === undefined ? null : input.verified ? 1 : 0
         );
       const seq = Number(result.lastInsertRowid);
       const addReceipt = this.db.query("INSERT INTO receipts (seq, recipient, delivered_at) VALUES (?1, ?2, NULL)");
@@ -694,6 +703,7 @@ export class BusDatabase {
         createdAt: input.createdAt,
         receipts: input.recipients.map((to) => ({ to, deliveredAt: null, seenAt: null })),
         ...(quote ? { quote } : {}),
+        ...(input.verified === undefined ? {} : { verified: input.verified }),
       };
     })();
   }

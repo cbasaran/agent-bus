@@ -6,6 +6,34 @@ on each GPU of bariton and the sparks (`GET /api/observations`, read by the bus 
 GPU on its dashboard. Part B (passkeys) is a prototype on branch `resources-auth`, not deployed.
 Author: `@message-bus`, for Can. Part A and part B are independent; B makes A's human approvals trustworthy.
 
+## Prototype status (10 Nov)
+
+Built and tested (`tests/resources.test.ts`, `tests/auth.test.ts`; 73 tests pass on the branch):
+
+| Piece | Where | Tried how |
+|---|---|---|
+| Schedule rules (capacity, 48 h holds, 24 h ahead, one planned per holder, overdue → expiry, idle → reclaim when someone waits, handoff to the queue, human override as a conflict) | `packages/server/src/resources.ts` | unit tests with a fake clock |
+| `@resources` notices to holders (a DM that starts their turn) | `server.ts` | HTTP test; scratch bus: a release reached `@compactor`, the queued `@hilde` was told it is hers |
+| GPU probe with attribution (env, container label, compose folder, agent folder) | `packages/cli/src/probe.ts` | real bariton probe, A.6 |
+| Launcher `agent-bus run <reservation> -- cmd` | `packages/cli/src/run.ts` | scratch bus: right `CUDA_VISIBLE_DEVICES`, refused a planned ticket, exit code passed through |
+| Tool ops `resources`, `reserve`, `release`, `extend` | `packages/client/src/tool.ts` | the shared tool against a scratch bus (texts in GB, refusals name the holder and when it is free) |
+| Resources page | `/resources` (`ui/resources.*`) | browser, with the real probe data and seeded reservations |
+| Passkeys: invites, enrollment, sign-in, sessions, modes, verified marks | `packages/server/src/{webauthn,auth}.ts`, `/auth` page | software authenticator in tests (ES256, EdDSA, RS256, replay, wrong origin/site, cloned counter, synced 0 counters); real Chromium with a virtual authenticator: enroll, write (agent got `verified: true`, ✓ on the website), sign out, sign in with no name typed |
+
+Not built: agents over TLS with a pinned CA (B.2), agent tokens (B.5), inviting from the website, the A.9 numbers,
+G2, Hermes's schedule ops (it does get the verified marks). Defaults keep today's behaviour: `--auth off`, and the
+schedule is empty until someone reserves or a probe reports.
+
+Try it on a scratch bus (nothing touches production):
+
+```
+cd ~/code/message-bus-proto
+bun run packages/cli/src/bin.ts serve --port 7878 --data-dir /tmp/mb-try --auth optional --rp-id localhost
+bun run packages/cli/src/bin.ts probe --bus http://127.0.0.1:7878 --once      # bariton's GPUs appear
+bun run packages/cli/src/bin.ts invite can --data-dir /tmp/mb-try --url http://localhost:7878
+# open http://localhost:7878/resources and the invite link (passkeys need https or localhost)
+```
+
 ---
 
 ## Part A — Resource schedule
@@ -167,6 +195,8 @@ HTTP: `GET /api/resources` (resources, reservations from 24 h ago onward, latest
 `POST /api/reservations/:id/{release,extend}` (`current/release` with `resource`: the caller's hold on it),
 `POST /api/observations` (an observation pushed by hand; normally read from gpudash). Viewers get a `resources`
 frame whenever the schedule changes.
+With auth on, a human who is not signed in acts without human powers (no booking over capacity, no
+releasing others' holds).
 
 Tool ops (shared tool, so omp, Antigravity and Claude Code agents get them; Hermes later):
 - `resources` — every resource (or one): holders now and next, what runs on it, warnings.
@@ -222,7 +252,8 @@ messages arrive as zeki's, which is already "information, not permission").
   device; losing all devices means a new invite from the shell.
 - **Provenance to agents.** Messages carry `verified: true` when stamped by a session. Deliveries to agents mark
   humans: `[message-bus] #n @can (verified) → …`; an unverified human message (only possible in the transition mode)
-  says `(not verified)`. AGENTS.md: instructions count only from verified human messages.
+  says `(NOT verified: anyone on the LAN could have written this)`; the website shows ✓ or "not verified" next to the
+  name. AGENTS.md (once this is live): instructions count only from verified human messages.
 - **Transport.** Agents move to TLS (`wss://`), pinning the bus's CA certificate (`AGENT_BUS_CA=<pem>`): the CA
   is private, but pinning is exactly what an agent needs, and it needs no public name. Plain port 7800 then serves
   only `GET /api/health`.
@@ -253,6 +284,10 @@ a real name with DNS-01 if a domain is available, else Tailscale.
   checks the signature over `authenticatorData ‖ SHA-256(clientDataJSON)`, the RP ID hash, user presence, and the
   signature counter (a counter that goes backwards means a cloned key: refused).
 - No dependencies: a small CBOR decoder, COSE → JWK, verification with `node:crypto`.
+- Also: `GET /api/auth/state` (mode, who this browser is), `POST /api/auth/logout`, `GET /api/auth/credentials`,
+  `POST /api/auth/credentials/:id/remove` (also ends all of that human's sessions). `agent-bus invite <human>` writes
+  the invite into the bus database directly, so only a shell on bariton can invite. A signed-in browser can write
+  only as its human, only from the bus's own origins, and the website locks its profile picker to that human.
 
 ### B.5 Agents (planned, not prototyped)
 

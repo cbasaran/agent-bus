@@ -5,7 +5,7 @@
 import { realpathSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { deliveryHeader, describeReceipts, formatAddress, formatUtc, quoteLine } from "../../protocol/src/address";
+import { deliveryHeader, describeReceipts, formatAddress, formatUtc, provenanceMark, quoteLine } from "../../protocol/src/address";
 import type { Reservation, ReservationResponse, Resource, ResourcesResponse } from "../../protocol/src/resources";
 import type { Conversation, FileRef, Message, PostMessageResponse, ReadResponse, ReceiptFrame } from "../../protocol/src/types";
 import type { BusConnection, Delivery } from "./connection";
@@ -162,7 +162,7 @@ export async function deliveryText(conn: BusConnection, delivery: Delivery): Pro
 export function formatDelivery(delivery: Delivery, savedFiles: string[]): string {
   const { message, conversation, replyTo } = delivery;
   const where = conversation.kind === "all" ? "@all" : formatAddress(conversation.addressed);
-  const lines = [deliveryHeader(message.seq, message.from, where, message.createdAt)];
+  const lines = [deliveryHeader(message.seq, message.from, where, message.createdAt, message.verified)];
   if (message.quote) lines.push(quoteLine(message.quote));
   if (message.text) lines.push(message.text);
   message.files.forEach((file, i) => {
@@ -188,7 +188,7 @@ const READ_BUDGET_CHARS = 30_000;
  */
 export function formatReadMessage(message: Message, conversation: Conversation | undefined, maxText: number, savedFiles: string[] = []): string {
   const where = !conversation ? message.conversationId : conversation.kind === "all" ? "@all" : formatAddress(conversation.members);
-  const lines = [`#${message.seq} @${message.from} → ${where} · ${formatUtc(message.createdAt)}`];
+  const lines = [`#${message.seq} @${message.from}${provenanceMark(message.verified)} → ${where} · ${formatUtc(message.createdAt)}`];
   if (message.quote) lines.push(quoteLine(message.quote));
   if (message.text) {
     lines.push(

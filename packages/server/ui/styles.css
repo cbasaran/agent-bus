@@ -1665,3 +1665,99 @@ ul.md-list ul.md-list { list-style: circle; }
     font-size: 16px;
   }
 }
+
+/* ---- Sign-in page (auth.html) and verified marks (experimental) ---- */
+
+.res-page {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow-y: auto;
+}
+
+.res-page .brand {
+  color: inherit;
+  text-decoration: none;
+}
+
+.res-crumb {
+  font-weight: 600;
+}
+
+.res-experimental {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--warning);
+  color: #000;
+  font-size: 11px;
+  font-weight: 600;
+  vertical-align: 1px;
+}
+
+.res-main {
+  padding: 16px 20px 40px;
+  color: var(--text);
+}
+
+.res-main h2 {
+  margin: 0 0 10px;
+  font-size: 15px;
+}
+
+.res-msg {
+  flex-basis: 100%;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.topbar-link {
+  color: var(--sidebar-text);
+  font-size: 13px;
+  text-decoration: none;
+  opacity: 0.85;
+}
+
+.topbar-link:hover {
+  opacity: 1;
+  text-decoration: underline;
+}
+
+.verified-tag {
+  color: var(--online);
+  font-weight: 700;
+}
+
+.unverified-tag {
+  padding: 0 5px;
+  border: 1px solid var(--warning);
+  border-radius: 4px;
+  color: var(--warning);
+  font-size: 11px;
+}
+
+.auth-main {
+  max-width: 640px;
+}
+
+.auth-card {
+  padding: 16px 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.auth-card h3 {
+  margin: 14px 0 6px;
+  font-size: 14px;
+}
+
+.auth-list {
+  margin: 0 0 8px;
+  padding-left: 18px;
+}
+
+.auth-note {
+  color: var(--muted);
+  font-size: 13px;
+}
