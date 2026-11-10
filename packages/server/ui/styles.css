@@ -1257,11 +1257,40 @@ ul.md-list ul.md-list { list-style: circle; }
   min-width: 0;
 }
 
+/* The grip above the message box: drag it to set the box's height (touch and mouse). */
+.composer-grip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 14px;
+  margin: -10px 0 2px;
+  cursor: ns-resize;
+  touch-action: none;
+}
+
+.composer-grip::before {
+  content: "";
+  width: 40px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+}
+
+.composer-grip:hover::before,
+.composer-grip:focus-visible::before,
+.composer-grip.dragging::before {
+  background: var(--muted);
+}
+
+.composer-grip:focus-visible {
+  outline: none;
+}
+
 .composer textarea {
   display: block;
   width: 100%;
   min-height: 40px;
-  max-height: 240px;
+  /* Grows with its text up to 240px (app.ts autosize), or the height dragged with the grip above it. */
   resize: none;
   padding: 9px 12px;
   border: 1px solid var(--border);

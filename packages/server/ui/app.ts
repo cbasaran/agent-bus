@@ -88,6 +88,7 @@ const dom = {
   fileInput: el<HTMLInputElement>("file-input"),
   mentionMenu: el<HTMLUListElement>("mention-menu"),
   input: el<HTMLTextAreaElement>("composer-input"),
+  composerGrip: el<HTMLDivElement>("composer-grip"),
   sendBtn: el<HTMLButtonElement>("send-btn"),
   dropOverlay: el<HTMLDivElement>("drop-overlay"),
   profileDialog: el<HTMLDialogElement>("profile-dialog"),
@@ -1637,9 +1638,81 @@ function updateComposerState(): void {
 /** The phone layout of styles.css (one screen at a time: the conversation list or a conversation). */
 const PHONE = window.matchMedia("(max-width: 640px)");
 
+/** Height the user gave the message box with its grip (px); undefined = grows with its text. Kept per browser. */
+const COMPOSER_HEIGHT_KEY = "agent-bus.composerHeight";
+const COMPOSER_MIN = 40;
+const COMPOSER_AUTO_MAX = 240;
+let composerHeight: number | undefined = Number(localStorage.getItem(COMPOSER_HEIGHT_KEY)) || undefined;
+
+/** Tallest the box may be dragged: most of the chat, leaving room to see the newest messages. */
+function composerMax(): number {
+  const chat = dom.composer.parentElement;
+  return Math.max(COMPOSER_MIN, Math.floor((chat?.clientHeight ?? window.innerHeight) * 0.7));
+}
+
 function autosize(): void {
+  if (composerHeight !== undefined) {
+    dom.input.style.height = `${Math.min(composerHeight, composerMax())}px`;
+    return;
+  }
   dom.input.style.height = "auto";
-  dom.input.style.height = `${Math.min(dom.input.scrollHeight, 240)}px`;
+  dom.input.style.height = `${Math.min(dom.input.scrollHeight, COMPOSER_AUTO_MAX)}px`;
+}
+
+function setComposerHeight(height: number | undefined): void {
+  composerHeight = height;
+  if (height === undefined) localStorage.removeItem(COMPOSER_HEIGHT_KEY);
+  else localStorage.setItem(COMPOSER_HEIGHT_KEY, String(height));
+  dom.composerGrip.setAttribute("aria-valuenow", String(height ?? dom.input.offsetHeight));
+  autosize();
+}
+
+// Dragging the grip: read the sizes once at the start, then write only the box's height (one write per frame).
+{
+  const grip = dom.composerGrip;
+  let drag: { startY: number; startHeight: number; max: number; stick: boolean; target: number; frame: number } | undefined;
+  grip.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    try {
+      grip.setPointerCapture(event.pointerId);
+    } catch {
+      // The pointer is already gone (released before this ran): the drag still follows moves over the grip.
+    }
+    grip.classList.add("dragging");
+    const startHeight = dom.input.offsetHeight;
+    drag = { startY: event.clientY, startHeight, max: composerMax(), stick: nearBottom(), target: startHeight, frame: 0 };
+  });
+  grip.addEventListener("pointermove", (event) => {
+    const d = drag;
+    if (!d) return;
+    d.target = Math.round(Math.min(d.max, Math.max(COMPOSER_MIN, d.startHeight + d.startY - event.clientY)));
+    d.frame ||= requestAnimationFrame(() => {
+      d.frame = 0;
+      dom.input.style.height = `${d.target}px`;
+      // Writing (not reading) the scroll position keeps the newest message in view while the box grows.
+      if (d.stick) dom.messageScroll.scrollTop = 1e9;
+    });
+  });
+  const end = (): void => {
+    const d = drag;
+    if (!d) return;
+    drag = undefined;
+    cancelAnimationFrame(d.frame);
+    grip.classList.remove("dragging");
+    if (d.target !== d.startHeight) setComposerHeight(d.target);
+    if (d.stick) scrollToBottom();
+  };
+  grip.addEventListener("pointerup", end);
+  grip.addEventListener("pointercancel", end);
+  grip.addEventListener("dblclick", () => setComposerHeight(undefined));
+  grip.addEventListener("keydown", (event) => {
+    if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+    event.preventDefault();
+    const step = event.key === "ArrowUp" ? 24 : -24;
+    setComposerHeight(Math.min(composerMax(), Math.max(COMPOSER_MIN, dom.input.offsetHeight + step)));
+  });
+  grip.setAttribute("aria-valuemin", String(COMPOSER_MIN));
 }
 
 /** Object URLs of the staged image previews currently shown; revoked on every re-render. */
