@@ -16,6 +16,7 @@ import type {
   PostMessageResponse,
   ReceiptFrame,
 } from "../../protocol/src/types";
+import type { ReservationResponse, ResourcesResponse } from "../../protocol/src/resources";
 
 export type Delivery = Extract<AgentServerFrame, { type: "deliver" }>;
 
@@ -231,6 +232,21 @@ export class BusConnection {
   /** One message by number, with its conversation. */
   message(seq: number): Promise<{ message: Message; conversation: Conversation }> {
     return this.request<{ message: Message; conversation: Conversation }>(`/api/messages/${seq}`, { method: "GET" });
+  }
+
+  /** The resource schedule (experimental): resources, reservations, what probes see, warnings. */
+  resources(): Promise<ResourcesResponse> {
+    return this.request<ResourcesResponse>("/api/resources", { method: "GET" });
+  }
+
+  /** A schedule change as this agent: POST /api/reservations, /api/reservations/:id/release or …/extend. */
+  schedule(pathname: string, body: Record<string, unknown>): Promise<ReservationResponse> {
+    const from = this.requireId();
+    return this.request<ReservationResponse>(pathname, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ from, ...body }),
+    });
   }
 
   /** The message with its receipts, after waiting up to `waitMs` for every recipient to have seen it. */

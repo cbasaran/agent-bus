@@ -29,9 +29,13 @@ import {
   type ReceiptFrame,
   type ViewerServerFrame,
   type AgentIdentity,
+  type Observation,
+  type ReserveRequest,
+  RESOURCES_AGENT_ID,
 } from "@agent-bus/protocol";
 import { BusDatabase, type ParticipantRecord } from "./db";
 import { resolveLanAddresses } from "./lan";
+import { ResourceSchedule, ScheduleError, type Actor } from "./resources";
 
 export interface BusServerOptions {
   host?: string;
@@ -161,6 +165,8 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
   const dbPath = path.join(dataDir, "message-bus.sqlite");
   const humans = resolveHumans(options.humans);
   const humanSet = new Set(humans);
+  /** Ids no agent can take: humans and the built-in @resources. */
+  const reservedIds = new Set([...humans, RESOURCES_AGENT_ID]);
   const db = new BusDatabase(dbPath, humans);
   // Nobody is connected yet: apply the logoff rule to everyone (also cleans up after a crash).
   for (const agent of db.listAgents()) db.removeIfIdle(agent.id);
@@ -327,6 +333,63 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
     }
   };
 
+  // ---- Resource schedule (experimental; docs/design/resources-and-auth.md part A) ----
+
+  /** The schedule changed: viewers refetch GET /api/resources (coalesced). */
+  let resourcesTimer: Timer | undefined;
+  const resourcesChanged = (): void => {
+    if (resourcesTimer || viewers.size === 0) return;
+    resourcesTimer = setTimeout(() => {
+      resourcesTimer = undefined;
+      const frame = JSON.stringify({ type: "resources" } satisfies ViewerServerFrame);
+      for (const ws of viewers) ws.send(frame);
+    }, 250);
+  };
+
+  /** A notice from @resources to one holder, in their own conversation with it (an agent's turn starts, as for a DM). */
+  const notify = (holder: string, text: string): void => {
+    const recipient = db.getParticipant(holder);
+    if (!recipient) return;
+    const writer = db.ensureBuiltInAgent(RESOURCES_AGENT_ID, "bus");
+    const now = Date.now();
+    const conversation = db.getOrCreateGroup([writer.id, holder], now);
+    const message = db.insertMessage({
+      conversationId: conversation.id,
+      from: writer.id,
+      fromKind: "agent",
+      text,
+      files: [],
+      createdAt: now,
+      recipients: recipientsFor(conversation, writer.id).map((p) => p.id),
+    });
+    publishMessage(message, db.getConversation(conversation.id) ?? conversation);
+  };
+
+  const schedule = new ResourceSchedule(db.db, {
+    notify,
+    changed: resourcesChanged,
+    agentFolders: () =>
+      db
+        .listAgents()
+        .filter((a) => a.host !== null && a.path !== null)
+        .map((a) => ({ id: a.id, host: a.host as string, path: a.path as string })),
+  });
+  const scheduleTimer = setInterval(() => {
+    try {
+      schedule.tick();
+    } catch (error) {
+      console.error("resource schedule tick failed:", error);
+    }
+  }, 30_000);
+
+  /** The writer of a schedule request. */
+  const actorOf = (body: Record<string, unknown>): Actor => {
+    if (typeof body.from !== "string") throw new HttpError(400, "from must be a participant id");
+    const writer = knownParticipant(body.from.trim().toLowerCase());
+    if (!writer) throw new HttpError(400, `Unknown participant "${body.from}"`);
+    return { id: writer.id, kind: writer.kind };
+  };
+
   const handleAgentOpen = (ws: Socket): void => {
     const data = ws.data;
     if (data.kind !== "agent") return;
@@ -348,7 +411,7 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
       fail(`Name "${identity.name}" has no usable id characters`);
       return;
     }
-    const { participant, isNew } = db.joinAgent(identity, data.harness, humanSet);
+    const { participant, isNew } = db.joinAgent(identity, data.harness, reservedIds);
     data.id = participant.id;
     let sockets = agentSockets.get(participant.id);
     if (!sockets) {
@@ -805,36 +868,40 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
   // ---- Website ----
 
   const mtime = (file: string): number => (existsSync(file) ? statSync(file).mtimeMs : -1);
-  let bundledApp: { mtime: number; code: string } | null = null;
+  const bundled = new Map<string, { mtime: number; code: string }>();
 
-  /** Built `public/<asset>` when it is at least as new as its `ui/` source, else the source. */
-  const serveUiAsset = async (asset: "index.html" | "styles.css" | "app.js"): Promise<Response> => {
-    const sourceName = asset === "app.js" ? "app.ts" : asset;
-    const sourcePath = path.join(uiDir, sourceName);
+  /** The website's files: built `public/<asset>` when at least as new as its `ui/` source, else the source (scripts bundled on the fly). */
+  const UI_ASSETS: Record<string, { source: string; type: string }> = {
+    "index.html": { source: "index.html", type: "text/html; charset=utf-8" },
+    "resources.html": { source: "resources.html", type: "text/html; charset=utf-8" },
+    "styles.css": { source: "styles.css", type: "text/css; charset=utf-8" },
+    "app.js": { source: "app.ts", type: "application/javascript; charset=utf-8" },
+    "resources.js": { source: "resources.ts", type: "application/javascript; charset=utf-8" },
+  };
+  const serveUiAsset = async (asset: string): Promise<Response> => {
+    const spec = UI_ASSETS[asset];
+    if (!spec) return new Response("Not found", { status: 404 });
+    const sourcePath = path.join(uiDir, spec.source);
     const builtPath = path.join(publicDir, asset);
     const sourceMtime = mtime(sourcePath);
-    const contentType =
-      asset === "app.js"
-        ? "application/javascript; charset=utf-8"
-        : asset === "index.html"
-          ? "text/html; charset=utf-8"
-          : "text/css; charset=utf-8";
-    const headers = { "Content-Type": contentType, "Cache-Control": "no-cache" };
+    const headers = { "Content-Type": spec.type, "Cache-Control": "no-cache" };
     if (existsSync(builtPath) && statSync(builtPath).mtimeMs >= sourceMtime) {
       return new Response(Bun.file(builtPath), { headers });
     }
     if (sourceMtime < 0) return json({ error: `Website asset ${asset} not found` }, 404);
-    if (asset !== "app.js") return new Response(Bun.file(sourcePath), { headers });
-    if (!bundledApp || bundledApp.mtime !== sourceMtime) {
+    if (!spec.source.endsWith(".ts")) return new Response(Bun.file(sourcePath), { headers });
+    let cached = bundled.get(asset);
+    if (!cached || cached.mtime !== sourceMtime) {
       const result = await Bun.build({ entrypoints: [sourcePath], target: "browser", format: "esm" });
       const output = result.outputs[0];
       if (!result.success || !output) {
         const detail = result.logs.map((log) => log.message).join("; ");
         return json({ error: `Failed to bundle the website: ${detail}` }, 500);
       }
-      bundledApp = { mtime: sourceMtime, code: await output.text() };
+      cached = { mtime: sourceMtime, code: await output.text() };
+      bundled.set(asset, cached);
     }
-    return new Response(bundledApp.code, { headers });
+    return new Response(cached.code, { headers });
   };
 
   const handleApi = async (req: Request, url: URL): Promise<Response> => {
@@ -865,6 +932,52 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
     const fileMatch = /^\/api\/files\/([^/]+)$/.exec(pathname);
     if (method === "GET" && fileMatch?.[1]) return getFile(decodeURIComponent(fileMatch[1]));
     if (method === "POST" && pathname === "/api/settings") return json(await postSetting(req));
+    if (method === "GET" && pathname === "/api/resources") return json(schedule.listing());
+    if (method === "POST" && pathname === "/api/resources") {
+      const body = await readJsonObject(req);
+      actorOf(body);
+      const { kind, host: resourceHost, name, label, capacity, unit } = body;
+      if ((kind !== "service" && kind !== "account") || typeof resourceHost !== "string" || typeof name !== "string") {
+        throw new HttpError(400, 'Give kind ("service" or "account"), host and name');
+      }
+      return json({
+        resource: schedule.register({
+          kind,
+          host: resourceHost,
+          name,
+          ...(typeof label === "string" ? { label } : {}),
+          ...(typeof capacity === "number" ? { capacity } : {}),
+          ...(typeof unit === "string" ? { unit } : {}),
+        }),
+      });
+    }
+    if (method === "POST" && pathname === "/api/reservations") {
+      const body = await readJsonObject(req);
+      const actor = actorOf(body);
+      const reservation = schedule.reserve(body as unknown as ReserveRequest, actor);
+      return json({ reservation, resource: schedule.resolve(reservation.resourceId) });
+    }
+    const reservationMatch = /^\/api\/reservations\/([^/]+)\/(release|extend)$/.exec(pathname);
+    if (method === "POST" && reservationMatch?.[1]) {
+      const body = await readJsonObject(req);
+      const actor = actorOf(body);
+      const id = decodeURIComponent(reservationMatch[1]);
+      if (reservationMatch[2] === "release") {
+        const reservation = id === "current" && typeof body.resource === "string" ? schedule.releaseOn(body.resource, actor) : schedule.release(id, actor);
+        return json({ reservation, resource: schedule.resolve(reservation.resourceId) });
+      }
+      if (typeof body.hours !== "number") throw new HttpError(400, "hours must be a number");
+      const reservation = schedule.extend(id, body.hours, actor);
+      return json({ reservation, resource: schedule.resolve(reservation.resourceId) });
+    }
+    if (method === "POST" && pathname === "/api/observations") {
+      const body = await readJsonObject(req);
+      if (typeof body.host !== "string" || !Array.isArray(body.gpus) || !Array.isArray(body.processes)) {
+        throw new HttpError(400, "Give host, gpus and processes (an agent-bus probe report)");
+      }
+      schedule.observe(body as unknown as Observation);
+      return json({ ok: true });
+    }
     return json({ error: `No route for ${method} ${pathname}` }, 404);
   };
 
@@ -903,14 +1016,15 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
           return await handleApi(req, url);
         } catch (error) {
           if (error instanceof HttpError) return json({ error: error.message }, error.status);
+          if (error instanceof ScheduleError) return json({ error: error.message }, error.status);
           console.error(error);
           return json({ error: error instanceof Error ? error.message : String(error) }, 500);
         }
       }
       if (req.method === "GET") {
         if (pathname === "/" || pathname === "/index.html") return serveUiAsset("index.html");
-        if (pathname === "/app.js") return serveUiAsset("app.js");
-        if (pathname === "/styles.css") return serveUiAsset("styles.css");
+        if (pathname === "/resources") return serveUiAsset("resources.html");
+        if (/^\/[a-z]+\.(js|css|html)$/.test(pathname)) return serveUiAsset(pathname.slice(1));
       }
       return new Response("Not found", { status: 404 });
     },
@@ -967,6 +1081,8 @@ export function createBusServer(options: BusServerOptions = {}): BusServerHandle
       for (const waiters of receiptWaiters.values()) for (const waiter of waiters) waiter.resolve();
       receiptWaiters.clear();
       clearTimeout(viewerParticipantsTimer);
+      clearTimeout(resourcesTimer);
+      clearInterval(scheduleTimer);
       await Promise.all([server.stop(true), secure?.stop(true)]);
       agentSockets.clear();
       viewers.clear();
