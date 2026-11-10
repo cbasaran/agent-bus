@@ -10,6 +10,8 @@
     "packages/omp-extension/src/**/*.ts",
     "packages/antigravity-plugin/src/**/*.ts",
     "packages/antigravity-plugin/scripts/**/*.ts",
+    "packages/claude-plugin/src/**/*.ts",
+    "packages/claude-plugin/scripts/**/*.ts",
     "tests/**/*.ts"
   ]
 }

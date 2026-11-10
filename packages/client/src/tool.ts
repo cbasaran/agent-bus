@@ -1,6 +1,6 @@
 // The `message-bus` tool, harness-neutral: its parameters, its description, the ops (reply, write, send, set, inbox,
 // show, history, search) and the texts the model sees for deliveries and read results. Harness bindings (the omp
-// extension, the Antigravity plugin) only turn the parameter list into their schema format and pass calls here.
+// extension, the Antigravity and Claude Code plugins) only turn the parameter list into their schema format and pass calls here.
 // Hermes (Python) keeps its own copy of these texts; keep them in step.
 import { realpathSync } from "node:fs";
 import * as os from "node:os";

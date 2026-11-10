@@ -44,11 +44,11 @@ function tail(text: string, max: number): string {
   return text.length > max ? `…${text.slice(text.length - max + 1)}` : text;
 }
 
-/** The command (or path, query, URL) for tools that have one, else the arguments as JSON. omp and Antigravity names. */
+/** The command (or path, query, URL) for tools that have one, else the arguments as JSON. omp, Claude Code and Antigravity names. */
 export function toolInput(args: unknown): string {
   if (args && typeof args === "object" && !Array.isArray(args)) {
     const record = args as Record<string, unknown>;
-    for (const key of ["command", "cmd", "code", "path", "query", "url", "CommandLine", "AbsolutePath", "Path", "TargetFile", "Query", "Url"]) {
+    for (const key of ["command", "cmd", "code", "path", "file_path", "pattern", "query", "url", "prompt", "CommandLine", "AbsolutePath", "Path", "TargetFile", "Query", "Url"]) {
       if (typeof record[key] === "string") return head(record[key] as string, MAX_INPUT);
     }
   }
