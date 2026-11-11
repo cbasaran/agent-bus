@@ -3,5 +3,5 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Claude Code plugin: an MCP server per session (bus agent for the project folder, the message-bus tool, a channel for incoming messages) and lifecycle hooks. Install with `bun run install:claude`."
+  "description": "Claude Code plugin: an MCP server per session (bus agent for the project folder, the message-bus tool, a channel for incoming messages) and lifecycle hooks. Install with `agent-bus install claude`."
 }

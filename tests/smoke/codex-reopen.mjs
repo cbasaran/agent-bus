@@ -42,7 +42,7 @@ async function app() {
 }
 let client;
 try {
-  execFileSync("bun",["run","install:codex","--build-only","--dir",path.join(dir,"market"),"--url",bus.url],{stdio:"pipe"});
+  execFileSync("bun",["run","agent-bus","install","codex","--build-only","--dir",path.join(dir,"market"),"--url",bus.url],{stdio:"pipe"});
   copyFileSync(plugin+"/hooks/hooks.json",home+"/hooks.json");
   const conf=home+"/config.toml";
   writeFileSync(conf,`model_provider="mock"

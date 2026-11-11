@@ -1,38 +1,52 @@
-// Builds and installs a local Codex plugin marketplace containing message-bus.
-//   bun run install:codex [--url http://bus-host:7800] [--dir <marketplace root>] [--uninstall]
-//   bun run install:codex --build-only --dir <folder>
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+// Installs the message-bus plugin into Codex (`agent-bus install codex`): builds the MCP server into a local Codex
+// plugin marketplace (~/.agent-bus/codex-marketplace by default) and registers marketplace and plugin with the
+// `codex` CLI. With `buildOnly`, it only writes the marketplace.
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { arg, bundleForNode, harnessCli, installBusUrl, jsRuntime, removeOwnedDir, writeJson } from "../../client/src/install";
-import { bindingFor, remember, type Binding } from "../src/reopen";
+import {
+  bundleForNode,
+  configBusUrl,
+  harnessCli,
+  installBusUrl,
+  jsRuntime,
+  manifestName,
+  removeOwnedDir,
+  writeJson,
+  writeMetadata,
+  type InstallOptions,
+  type InstallStatus,
+} from "../../client/src/install";
+import { bindingFor, remember } from "../src/reopen";
 import { HOOK_EVENTS, HOOK_TOOL } from "../src/session";
 
 const PLUGIN = "message-bus";
 const MARKETPLACE = "agent-bus";
 const root = path.resolve(import.meta.dir, "..");
-const version = (JSON.parse(readFileSync(path.join(root, "package.json"), "utf8")) as { version: string }).version;
-
-const target = path.resolve(arg("dir") ?? path.join(os.homedir(), ".agent-bus", "codex-marketplace"));
-const pluginDir = path.join(target, "plugins", PLUGIN);
-const marketplaceFile = path.join(target, ".agents", "plugins", "marketplace.json");
 const codex = harnessCli("codex", "Codex");
 
-function removeOld(): void {
-  removeOwnedDir(target, marketplaceFile, MARKETPLACE, "marketplace");
+const marketplaceRoot = (opts: InstallOptions): string =>
+  path.resolve(opts.dir ?? path.join(os.homedir(), ".agent-bus", "codex-marketplace"));
+const manifestOf = (target: string): string => path.join(target, ".agents", "plugins", "marketplace.json");
+
+export interface CodexInstallOptions extends InstallOptions {
+  /**
+   * One-time migration for a chat that was already running before 1.5: its rollout file (absolute path). Run from
+   * inside that chat (needs CODEX_THREAD_ID); never guesses the newest chat in a folder. Normal installs learn the
+   * same binding from a root hook.
+   */
+  bindTranscript?: string;
 }
 
-async function install(): Promise<void> {
-  const busUrl = installBusUrl(path.join(pluginDir, "config.json"));
+export async function install(opts: CodexInstallOptions): Promise<void> {
+  const target = marketplaceRoot(opts);
+  const pluginDir = path.join(target, "plugins", PLUGIN);
+  const busUrl = installBusUrl(path.join(pluginDir, "config.json"), opts.url);
   const node = jsRuntime();
-  if (process.argv.includes("--live-output")) {
-    throw new Error("Live output is now enabled for every connected Codex chat. Remove --live-output and its UUID to install this version.");
-  }
-  // One-time migration for an already-running pre-1.5 chat. Never choose the newest
-  // chat in a directory. Normal installs learn this same binding from a root hook.
-  let seed: Binding | undefined;
-  if (process.argv.includes("--bind-current-transcript")) {
-    seed = bindingFor(process.cwd(), process.env.CODEX_THREAD_ID, arg("bind-current-transcript"));
+  const version = (JSON.parse(readFileSync(path.join(root, "package.json"), "utf8")) as { version: string }).version;
+
+  const seed = opts.bindTranscript === undefined ? undefined : bindingFor(process.cwd(), process.env.CODEX_THREAD_ID, opts.bindTranscript);
+  if (opts.bindTranscript !== undefined) {
     if (!seed) throw new Error("The transcript must belong to this running Codex chat.");
     const first = (await Bun.file(seed.transcript).slice(0, 1024 * 1024).text()).split("\n")[0];
     const meta = JSON.parse(first || "null");
@@ -40,13 +54,14 @@ async function install(): Promise<void> {
       throw new Error("The transcript metadata does not match this project and chat.");
     }
   }
-  removeOld();
+
+  removeOwnedDir(target, manifestOf(target), MARKETPLACE, "marketplace");
   mkdirSync(path.join(pluginDir, ".codex-plugin"), { recursive: true });
   mkdirSync(path.join(pluginDir, "hooks"), { recursive: true });
-  mkdirSync(path.dirname(marketplaceFile), { recursive: true });
+  mkdirSync(path.dirname(manifestOf(target)), { recursive: true });
   await bundleForNode(root, path.join(pluginDir, "dist"), [["src/server-main.ts", "server"]]);
   const description = "Puts Codex tasks on the LAN message bus and exposes the message-bus tool.";
-  writeJson(marketplaceFile, {
+  writeJson(manifestOf(target), {
     name: MARKETPLACE,
     interface: { displayName: "Agent Bus" },
     plugins: [
@@ -100,12 +115,9 @@ async function install(): Promise<void> {
       })
     ),
   });
-  writeFileSync(
-    path.join(target, "METADATA"),
-    `created by: message-bus (bun run install:codex)\ncreated: ${new Date().toISOString()}\ndelete: bun run install:codex --uninstall\n`
-  );
+  writeMetadata(target, "codex", "local Codex plugin marketplace holding the message-bus plugin (tasks join the LAN message bus).");
 
-  if (process.argv.includes("--build-only")) {
+  if (opts.buildOnly) {
     console.log(`Built ${pluginDir} (bus ${busUrl}, runtime ${node}); not installed.`);
     return;
   }
@@ -123,11 +135,24 @@ async function install(): Promise<void> {
   console.log(`Installed ${PLUGIN}@${MARKETPLACE} from ${target} (bus ${busUrl}). Restart Codex and trust the plugin hooks when prompted.`);
 }
 
-function uninstall(): void {
-  codex.run("plugin", "remove", `${PLUGIN}@${MARKETPLACE}`);
-  codex.run("plugin", "marketplace", "remove", MARKETPLACE);
-  removeOld();
+export async function uninstall(opts: InstallOptions): Promise<void> {
+  const target = marketplaceRoot(opts);
+  if (codex.present) {
+    codex.run("plugin", "remove", `${PLUGIN}@${MARKETPLACE}`);
+    codex.run("plugin", "marketplace", "remove", MARKETPLACE);
+  }
+  removeOwnedDir(target, manifestOf(target), MARKETPLACE, "marketplace");
   console.log(`Removed ${PLUGIN}@${MARKETPLACE} and ${target}.`);
 }
 
-await (process.argv.includes("--uninstall") ? Promise.resolve(uninstall()) : install());
+export function status(opts: InstallOptions): InstallStatus {
+  const target = marketplaceRoot(opts);
+  const notes: string[] = [];
+  const installed = existsSync(target) && manifestName(manifestOf(target)) === MARKETPLACE;
+  if (installed && codex.present) {
+    const listed = codex.run("plugin", "list");
+    if (listed.ok && !listed.out.includes(PLUGIN)) notes.push("built but not registered with Codex");
+  }
+  if (installed) notes.push("trust the plugin's hooks in Codex once, and allow its message-bus tool");
+  return { installed, where: target, busUrl: configBusUrl(path.join(target, "plugins", PLUGIN, "config.json")), notes };
+}

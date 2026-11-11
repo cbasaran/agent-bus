@@ -1,23 +1,33 @@
-// Installs the message-bus plugin into Antigravity: builds the daemon and the hook into self-contained JS files and
-// writes the plugin folder (~/.gemini/config/plugins/message-bus by default) with its manifest, hooks, MCP server and
-// bus URL, then asks a running Antigravity to reload its MCP servers.
+// Installs the message-bus plugin into Antigravity (`agent-bus install antigravity`): builds the daemon and the hook
+// into self-contained JS files and writes the plugin folder (~/.gemini/config/plugins/message-bus by default) with its
+// manifest, hooks, MCP server and bus URL, then asks a running Antigravity to reload its MCP servers.
 //
-//   bun run install:antigravity [--url http://bus-host:7800] [--dir <plugin folder>] [--uninstall]
-//
-// The folder is a copy, not a link: it keeps working when this checkout moves or changes; run this again to update.
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+// The folder is a copy, not a link: it keeps working when this checkout moves or changes; install again to update.
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, unlinkSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { arg, bundleForNode, installBusUrl, jsRuntime, removeOwnedDir, writeJson } from "../../client/src/install";
+import {
+  bundleForNode,
+  configBusUrl,
+  installBusUrl,
+  jsRuntime,
+  manifestName,
+  removeOwnedDir,
+  writeJson,
+  writeMetadata,
+  type InstallOptions,
+  type InstallStatus,
+} from "../../client/src/install";
 
 const PLUGIN = "message-bus";
 const root = path.resolve(import.meta.dir, "..");
-
-const target = path.resolve(arg("dir") ?? path.join(os.homedir(), ".gemini", "config", "plugins", PLUGIN));
 const appData = path.join(os.homedir(), ".gemini", "antigravity");
 
+const pluginFolder = (opts: InstallOptions): string =>
+  path.resolve(opts.dir ?? path.join(os.homedir(), ".gemini", "config", "plugins", PLUGIN));
+
 /** Removes an earlier install: a link (development installs) or a folder holding this plugin. Anything else stops. */
-function removeOld(): void {
+function removeOld(target: string): void {
   let stat;
   try {
     stat = lstatSync(target);
@@ -52,11 +62,12 @@ async function refreshAntigravity(): Promise<string> {
   return "Antigravity is not running; it loads the plugin when it starts.";
 }
 
-async function install(): Promise<void> {
-  const busUrl = installBusUrl(path.join(target, "config.json"));
+export async function install(opts: InstallOptions): Promise<void> {
+  const target = pluginFolder(opts);
+  const busUrl = installBusUrl(path.join(target, "config.json"), opts.url);
   const node = jsRuntime();
 
-  removeOld();
+  removeOld(target);
   mkdirSync(target, { recursive: true });
   await bundleForNode(root, path.join(target, "dist"), [
     ["src/daemon-main.ts", "daemon"],
@@ -78,21 +89,21 @@ async function install(): Promise<void> {
       Stop: hook("Stop"),
     },
   });
-  writeFileSync(
-    path.join(target, "METADATA"),
-    `created by: message-bus (bun run install:antigravity in ${path.dirname(path.dirname(root))})\n` +
-      `created: ${new Date().toISOString()}\n` +
-      "reason: Antigravity plugin that puts this machine's Antigravity conversations on the message bus.\n" +
-      "delete: with bun run install:antigravity --uninstall, or delete this folder; Antigravity then leaves the bus.\n"
-  );
+  writeMetadata(target, "antigravity", "Antigravity plugin that puts this machine's Antigravity conversations on the message bus.");
   console.log(`Installed ${PLUGIN} in ${target} (bus ${busUrl}, runtime ${node}).`);
+  if (opts.buildOnly) return;
   console.log(await refreshAntigravity().catch((err: Error) => `Could not reach Antigravity (${err.message}); restart it.`));
 }
 
-async function uninstall(): Promise<void> {
-  removeOld();
+export async function uninstall(opts: InstallOptions): Promise<void> {
+  const target = pluginFolder(opts);
+  removeOld(target);
   console.log(`Removed ${target}.`);
   console.log(await refreshAntigravity().catch((err: Error) => `Could not reach Antigravity (${err.message}); restart it.`));
 }
 
-await (process.argv.includes("--uninstall") ? uninstall() : install());
+export function status(opts: InstallOptions): InstallStatus {
+  const target = pluginFolder(opts);
+  const installed = manifestName(path.join(target, "plugin.json")) === PLUGIN;
+  return { installed, where: target, busUrl: configBusUrl(path.join(target, "config.json")), notes: [] };
+}

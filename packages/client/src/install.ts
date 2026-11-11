@@ -1,21 +1,51 @@
-// Shared by the plugin installers (scripts/install.ts of the Antigravity, Claude Code and Codex plugins). Runs on Bun
+// Shared by the harness installers (`agent-bus install <harness>`, packages/cli/src/harnesses.ts). Runs on Bun
 // (`Bun.build`, `Bun.which`); the bundled plugin code never imports it.
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 
-/** The value after `--<name>` on the command line. */
-export function arg(name: string): string | undefined {
-  const i = process.argv.indexOf(`--${name}`);
-  return i > 0 ? process.argv[i + 1] : undefined;
+/** What `agent-bus install <harness>` passes to a harness's installer. */
+export interface InstallOptions {
+  /** The bus URL (`--url`). */
+  url?: string;
+  /** Where to install instead of the harness's default (`--dir`). */
+  dir?: string;
+  /** Write the plugin files without registering them with the harness (`--build-only`). */
+  buildOnly?: boolean;
+  /** Replace a file at the install path that agent-bus did not write (`--force`; it is moved aside). */
+  force?: boolean;
 }
 
-/** The bus the plugin joins: --url, else AGENT_BUS_URL, else the URL of the install being replaced, else local. */
-export function installBusUrl(previousConfig: string): string {
-  const oldUrl = existsSync(previousConfig)
-    ? (JSON.parse(readFileSync(previousConfig, "utf8")) as { busUrl?: string }).busUrl
-    : undefined;
-  return (arg("url") ?? process.env.AGENT_BUS_URL ?? oldUrl ?? "http://127.0.0.1:7800").replace(/\/+$/, "");
+/** One harness's install, as `agent-bus doctor` reports it. */
+export interface InstallStatus {
+  installed: boolean;
+  /** The file or folder the install lives in. */
+  where: string;
+  /** The bus URL it joins (absent: not installed, or the install does not say). */
+  busUrl?: string;
+  /** Anything else worth knowing (not registered with the harness, installed by something else, …). */
+  notes: string[];
+}
+
+export const DEFAULT_INSTALL_URL = "http://127.0.0.1:7800";
+
+/**
+ * The bus the plugin joins: --url, else the URL of the install being replaced (so installing again only updates),
+ * else AGENT_BUS_URL, else local. AGENT_BUS_URL comes after the old install's URL because agent sessions export it to
+ * every command they run: an update run from an agent's shell must not move the install to that agent's bus.
+ */
+export function installBusUrl(previousConfig: string, url?: string): string {
+  return (url ?? configBusUrl(previousConfig) ?? process.env.AGENT_BUS_URL ?? DEFAULT_INSTALL_URL).replace(/\/+$/, "");
+}
+
+/** `busUrl` of an installed plugin's config.json, if there is one. */
+export function configBusUrl(configFile: string): string | undefined {
+  if (!existsSync(configFile)) return undefined;
+  try {
+    return (JSON.parse(readFileSync(configFile, "utf8")) as { busUrl?: string }).busUrl;
+  } catch {
+    return undefined;
+  }
 }
 
 /** The JS runtime the harness should start: node if installed (absolute: a GUI app's PATH may lack it), else bun. */
@@ -45,18 +75,64 @@ export function writeJson(file: string, value: unknown): void {
   writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
 }
 
+/** The `name` in a JSON manifest, if the file is there and readable. */
+export function manifestName(manifest: string): string | undefined {
+  if (!existsSync(manifest)) return undefined;
+  try {
+    return (JSON.parse(readFileSync(manifest, "utf8")) as { name?: string }).name;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
- * Removes an earlier install at `dir`, only one this script wrote: its `manifest` (a JSON file in it) names `name`.
+ * Removes an earlier install at `dir`, only one agent-bus wrote: its `manifest` (a JSON file in it) names `name`.
  * Anything else stops the install.
  */
 export function removeOwnedDir(dir: string, manifest: string, name: string, kind: "marketplace" | "plugin"): void {
   if (!existsSync(dir)) return;
-  const found = existsSync(manifest) ? (JSON.parse(readFileSync(manifest, "utf8")) as { name?: string }).name : undefined;
-  if (found !== name) throw new Error(`${dir} exists and is not the ${name} ${kind}; not touching it.`);
+  if (manifestName(manifest) !== name) throw new Error(`${dir} exists and is not the ${name} ${kind}; not touching it.`);
   rmSync(dir, { recursive: true });
 }
 
+/** The first line of every single file agent-bus writes (extension loaders, the CLI wrapper): marks it as ours. */
+export const OWNED_MARK = "agent-bus install";
+
+/**
+ * Writes `file` (`mode` for executables), replacing an earlier one agent-bus wrote. Anything else there (a file or link
+ * someone else put there) stops the install, unless `force`: then it is moved aside to `<file>.before-agent-bus`.
+ */
+export function writeOwnedFile(file: string, content: string, force = false, mode = 0o644): void {
+  let present = false;
+  try {
+    lstatSync(file);
+    present = true;
+  } catch {
+    // Not there yet.
+  }
+  if (present && !isOwnedFile(file)) {
+    if (!force) throw new Error(`${file} exists and was not written by agent-bus; not touching it (--force moves it aside).`);
+    renameSync(file, `${file}.before-agent-bus`);
+    console.log(`Moved the existing ${file} to ${file}.before-agent-bus.`);
+  }
+  mkdirSync(path.dirname(file), { recursive: true });
+  if (present && isOwnedFile(file)) rmSync(file);
+  writeFileSync(file, content, { mode });
+}
+
+/** Whether `file` is a regular file agent-bus wrote (a link is never ours: it points at someone else's file). */
+export function isOwnedFile(file: string): boolean {
+  try {
+    if (!lstatSync(file).isFile()) return false;
+    return readFileSync(file, "utf8").split("\n", 1)[0]?.includes(OWNED_MARK) ?? false;
+  } catch {
+    return false;
+  }
+}
+
 export interface Cli {
+  /** Whether the CLI is on PATH. */
+  readonly present: boolean;
   /** Runs the CLI; a failure is returned, not thrown. */
   run(...args: string[]): { ok: boolean; out: string };
   /** Runs the CLI; a failure throws with its output. */
@@ -71,10 +147,22 @@ export function harnessCli(command: string, product: string): Cli {
     return { ok: res.status === 0, out: `${res.stdout ?? ""}${res.stderr ?? ""}`.trim() };
   };
   return {
+    get present() {
+      return Bun.which(command) !== null;
+    },
     run,
     must(...args) {
       const res = run(...args);
       if (!res.ok) throw new Error(`${command} ${args.join(" ")} failed:\n${res.out}`);
     },
   };
+}
+
+/** METADATA for a folder an installer creates (team rule: every created folder says who made it and why). */
+export function writeMetadata(dir: string, harness: string, reason: string): void {
+  writeFileSync(
+    path.join(dir, "METADATA"),
+    `created by: agent-bus install ${harness}\ncreated: ${new Date().toISOString()}\nreason: ${reason}\n` +
+      `delete: with agent-bus uninstall ${harness}\n`
+  );
 }

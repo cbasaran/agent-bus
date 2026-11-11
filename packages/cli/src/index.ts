@@ -12,6 +12,22 @@ const USAGE = `Usage: agent-bus serve [--host 0.0.0.0] [--port 7800] [--data-dir
        agent-bus invite HUMAN [--data-dir DIR] [--url https://HOST:7843]
        agent-bus reset-agent AGENT [--data-dir DIR]
        agent-bus run [--bus URL] RESERVATION[,RESERVATION…] -- COMMAND [ARGS…]
+       agent-bus install HARNESS [--url http://BUS:7800] [--dir DIR] [--build-only] [--force]
+       agent-bus uninstall HARNESS [--dir DIR]
+       agent-bus doctor [--url http://BUS:7800]
+
+install / uninstall: put this machine's HARNESS on the bus, or take it off. HARNESS is one of
+  omp, pi           an extension file in ~/.omp/agent/extensions or ~/.pi/agent/extensions that loads this checkout
+  claude            a plugin in a local marketplace (~/.agent-bus/claude-marketplace), installed with the claude CLI
+  codex             a plugin in a local marketplace (~/.agent-bus/codex-marketplace), registered with the codex CLI
+  antigravity       a plugin folder in ~/.gemini/config/plugins/message-bus
+  cli               this command, as ~/.local/bin/agent-bus
+  --url defaults to the URL of the install being replaced, then $AGENT_BUS_URL, then http://127.0.0.1:7800.
+  Installing again updates. --force replaces a file at the install path that agent-bus did not write (moved aside).
+  codex only: --bind-current-transcript FILE (run inside a pre-1.5 chat to seed its reopen binding).
+
+doctor: what is installed here, which bus each install joins, whether it is reachable, which agents of this machine
+  are on it, and the agent token.
 
 serve:
   --host        Interface to bind (default 0.0.0.0)
@@ -138,6 +154,14 @@ export async function runCli(argv: string[]): Promise<number> {
       return 1;
     }
   }
+  if (command === "install" || command === "uninstall" || command === "doctor") {
+    try {
+      return await runInstall(command, rest);
+    } catch (error) {
+      console.error(`agent-bus ${command}: ${error instanceof Error ? error.message : String(error)}`);
+      return 1;
+    }
+  }
   if (command !== "serve") {
     console.error(`Unknown command "${command}"\n\n${USAGE}`);
     return 1;
@@ -230,4 +254,33 @@ async function runTool(command: "run", args: string[]): Promise<number> {
   if (!bus) throw new Error(`--bus needs a URL (${command})`);
   const ids = positional.flatMap((p) => p.split(",")).map((s) => s.trim()).filter(Boolean);
   return runTicketed(bus, ids, args.slice(i));
+}
+
+async function runInstall(command: "install" | "uninstall" | "doctor", args: string[]): Promise<number> {
+  const opts: { url?: string; dir?: string; buildOnly?: boolean; force?: boolean; bindTranscript?: string } = {};
+  let name: string | undefined;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i] ?? "";
+    const value = (): string => {
+      const v = args[++i];
+      if (v === undefined) throw new Error(`${arg} needs a value`);
+      return v;
+    };
+    if (arg === "--url") opts.url = value().replace(/\/+$/, "");
+    else if (arg === "--dir") opts.dir = value();
+    else if (arg === "--build-only" && command === "install") opts.buildOnly = true;
+    else if (arg === "--force" && command === "install") opts.force = true;
+    else if (arg === "--bind-current-transcript" && command === "install") opts.bindTranscript = value();
+    else if (arg.startsWith("--")) throw new Error(`Unknown option "${arg}"`);
+    else if (name === undefined && command !== "doctor") name = arg;
+    else throw new Error(`Unexpected argument "${arg}"`);
+  }
+  // Loaded here, not at the top: installers bundle plugin code, which `serve` never needs.
+  if (command === "doctor") return (await import("./doctor")).runDoctor(opts.url);
+  const { harness, HARNESSES } = await import("./harnesses");
+  if (name === undefined) throw new Error(`Name the harness: ${HARNESSES.map((h) => h.name).join(", ")}`);
+  if (opts.bindTranscript !== undefined && name !== "codex") throw new Error("--bind-current-transcript is for codex only");
+  const target = harness(name);
+  await (command === "install" ? target.install(opts) : target.uninstall(opts));
+  return 0;
 }
