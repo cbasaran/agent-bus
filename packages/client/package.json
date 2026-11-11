@@ -3,5 +3,5 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Harness-neutral bus client: agent connection, the message-bus tool (ops, texts) and live-output log. Used by the omp extension and the Antigravity plugin."
+  "description": "Harness-neutral bus client: agent connection, the message-bus tool, and the pieces every harness binding shares (status, held deliveries, MCP loop, hook socket, transcript tail, installer helpers). Used by the omp and pi extensions and the Claude Code, Antigravity and Codex plugins."
 }

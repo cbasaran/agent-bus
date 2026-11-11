@@ -5,7 +5,8 @@ import { closeSync, openSync, readSync, statSync } from "node:fs";
 export class LineTail {
   private current: string | undefined;
   private offset = 0;
-  private partial = "";
+  /** Bytes after the last newline: kept as bytes, so a UTF-8 character split across two reads stays whole. */
+  private partial: Buffer = Buffer.alloc(0);
 
   /** `onLine` gets each non-blank complete line; `live` is false for lines of the first read from a cut start. */
   constructor(private readonly onLine: (line: string, live: boolean) => void) {}
@@ -17,7 +18,7 @@ export class LineTail {
   /** Follows `file` from its last `startBytes` (the first, cut line skipped), reading what is there now. */
   open(file: string, startBytes: number): void {
     this.current = file;
-    this.partial = "";
+    this.partial = Buffer.alloc(0);
     let size = 0;
     try {
       size = statSync(file).size;
@@ -43,21 +44,27 @@ export class LineTail {
     }
     if (size < this.offset) {
       this.offset = 0;
-      this.partial = "";
+      this.partial = Buffer.alloc(0);
     }
     if (size === this.offset) return;
-    const fd = openSync(this.current, "r");
-    let chunk: string;
+    let chunk: Buffer;
+    let fd: number | undefined;
     try {
-      const buf = Buffer.alloc(size - this.offset);
-      readSync(fd, buf, 0, buf.length, this.offset);
+      fd = openSync(this.current, "r");
+      chunk = Buffer.alloc(size - this.offset);
+      readSync(fd, chunk, 0, chunk.length, this.offset);
       this.offset = size;
-      chunk = buf.toString("utf8");
+    } catch {
+      // Removed or unreadable between stat and open: try again at the next read.
+      return;
     } finally {
-      closeSync(fd);
+      if (fd !== undefined) closeSync(fd);
     }
-    const lines = (this.partial + chunk).split("\n");
-    this.partial = lines.pop() ?? "";
+    const data = Buffer.concat([this.partial, chunk]);
+    const end = data.lastIndexOf(10);
+    this.partial = Buffer.from(data.subarray(end + 1));
+    if (end < 0) return;
+    const lines = data.toString("utf8", 0, end).split("\n");
     if (skipFirstLine) lines.shift();
     for (const line of lines) {
       if (line.trim()) this.onLine(line, !skipFirstLine);

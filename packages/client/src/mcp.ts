@@ -55,6 +55,8 @@ export abstract class McpToolServer {
     } catch {
       return;
     }
+    // Valid JSON that is not a request object (`null`, `5`) is ignored like malformed input.
+    if (typeof request !== "object" || request === null) return;
     if (request.method === "notifications/initialized") this.resolveReady();
     // Notifications (no id) need no answer.
     if (request.id === undefined || request.id === null) return;
