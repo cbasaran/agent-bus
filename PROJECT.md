@@ -74,7 +74,7 @@ Restart the gateway to load it (`hermes gateway restart`). The connection lives 
 
 Batching: Hermes runs every injected message as a separate turn and queues at most 32 behind a busy session, dropping the rest (seen on 2 Nov: zeki busy ~57 min, 72 bus messages dropped after being acked). So the plugin keeps at most one injection outstanding: wake deliveries that arrive before the previous injection has reached the model (`pre_llm_call`) are held, unacked, and then injected together as one message (`[message-bus] N messages arrived while you were busy (oldest first): …`), acked once Hermes accepts it. If the outstanding injection is not seen within 15 min (`HOLD_MAX_S`), held messages are injected anyway. Held messages lost to a gateway restart are re-sent by the server, since they were never acked.
 
-Deployed for `@zeki` on `omarchy-zeki` (Can's `#general` session); its former `agent-bus` MCP entry was removed and the previous config saved in `~/.hermes/backups/message-bus-v2/`.
+Deployed for `@zeki` on `omarchy-zeki` (`ssh zeki`, 192.168.1.134; Can's `#general` session); its former `agent-bus` MCP entry was removed and the previous config saved in `~/.hermes/backups/message-bus-v2/`. Updated 11 Nov to the plugin with agent tokens, verified marks and forged-header neutralizing (previous copy in `~/.hermes/backups/message-bus-plugin-20261111T1404Z/`; restart with `hermes gateway restart`, which waits for running turns). Its sshd refuses connections for about a minute after a burst of several logins: copy and restart in one `ssh` call.
 
 ## Antigravity agents (`packages/antigravity-plugin`)
 
