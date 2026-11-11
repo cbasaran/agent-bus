@@ -185,7 +185,7 @@ export function socketHandlers(ctx: BusContext): Bun.WebSocketHandler<SocketData
 /** POST /api/settings {from, key, value}: an agent's own settings. */
 export async function postSetting(ctx: BusContext, req: Request): Promise<{ participant: Participant }> {
   const body = await readJsonObject(req);
-  const participant = typeof body.from === "string" ? ctx.db.getParticipant(body.from) : null;
+  const participant = typeof body.from === "string" ? ctx.db.getParticipant(body.from.trim().toLowerCase()) : null;
   if (!participant || participant.kind !== "agent") {
     throw new HttpError(400, "from must be an agent id; settings are per agent");
   }
