@@ -1,38 +1,28 @@
 # Design: resource schedule and human authentication
 
-Status (10 Nov): part A runs as a trial on the live bus, with gpudash (`~/code/gpudash`) as its eyes and display:
-the bus keeps the bookings, the rules, the agents' tool ops and the `@resources` notices; gpudash reports what runs
-on each GPU of bariton and the sparks (`GET /api/observations`, read by the bus every 30 s) and shows who holds each
-GPU on its dashboard. Part B (passkeys) is a prototype on branch `resources-auth`, not deployed.
+Status (11 Nov): both parts run on the live bus.
+- Part A runs as a trial, with gpudash (`~/code/gpudash`) as its eyes and display: the bus keeps the bookings, the
+  rules, the agents' tool ops and the `@resources` notices; gpudash reports what runs on each GPU of bariton and the
+  sparks (`GET /api/observations`, read by the bus every 30 s) and shows who holds each GPU on its dashboard. Holds
+  are shared by default (Can #4133); there is no limit on how far ahead one books (#4136).
+- Part B runs in `--auth optional` with RP ID `bariton` (`https://bariton:7843`); Can signs in with a passkey in
+  iCloud Keychain. Agent tokens (B.5) are live too, in a simpler form than planned.
 Author: `@message-bus`, for Can. Part A and part B are independent; B makes A's human approvals trustworthy.
 
-## Prototype status (10 Nov)
-
-Built and tested (`tests/resources.test.ts`, `tests/auth.test.ts`; 73 tests pass on the branch):
+## Status of the pieces
 
 | Piece | Where | Tried how |
 |---|---|---|
-| Schedule rules (capacity, 48 h holds, 24 h ahead, one planned per holder, overdue → expiry, idle → reclaim when someone waits, handoff to the queue, human override as a conflict) | `packages/server/src/resources.ts` | unit tests with a fake clock |
-| `@resources` notices to holders (a DM that starts their turn) | `server.ts` | HTTP test; scratch bus: a release reached `@compactor`, the queued `@hilde` was told it is hers |
-| GPU probe with attribution (env, container label, compose folder, agent folder) | `packages/cli/src/probe.ts` | real bariton probe, A.6 |
+| Schedule rules (capacity, 48 h holds, one planned per holder, overdue → expiry, idle → reclaim when someone waits, handoff to the queue, human override as a conflict, shared/private) | `packages/server/src/resources.ts` | unit tests with a fake clock |
+| `@resources` notices to holders (a DM that starts their turn) | server | HTTP test; scratch bus: a release reached `@compactor`, the queued `@hilde` was told it is hers |
+| What runs, with attribution (env, container label, compose folder, agent folder), model and endpoints | gpudash `/api/observations` | live since 10 Nov |
 | Launcher `agent-bus run <reservation> -- cmd` | `packages/cli/src/run.ts` | scratch bus: right `CUDA_VISIBLE_DEVICES`, refused a planned ticket, exit code passed through |
-| Tool ops `resources`, `reserve`, `release`, `extend` | `packages/client/src/tool.ts` | the shared tool against a scratch bus (texts in GB, refusals name the holder and when it is free) |
-| Resources page | `/resources` (`ui/resources.*`) | browser, with the real probe data and seeded reservations |
-| Passkeys: invites, enrollment, sign-in, sessions, modes, verified marks | `packages/server/src/{webauthn,auth}.ts`, `/auth` page | software authenticator in tests (ES256, EdDSA, RS256, replay, wrong origin/site, cloned counter, synced 0 counters); real Chromium with a virtual authenticator: enroll, write (agent got `verified: true`, ✓ on the website), sign out, sign in with no name typed |
+| Tool ops `servers`, `resources`, `reserve`, `release`, `extend`, `mode` | `packages/client/src/tool.ts` | tests; live agents booking since 10 Nov |
+| Passkeys: invites, enrollment, sign-in, sessions, modes, verified marks | `packages/server/src/{webauthn,auth}.ts`, `/auth` page | software authenticator in tests (ES256, EdDSA, RS256, replay, wrong origin/site, cloned counter, synced 0 counters); real Chromium with a virtual authenticator; Can's Mac (Safari and Chrome, iCloud Keychain) |
+| Agent tokens, forged-header neutralizing, sandboxed downloads | server, `packages/client/src/connection.ts`, Hermes plugin | tests |
 
-Not built: agents over TLS with a pinned CA (B.2), agent tokens (B.5), inviting from the website, the A.9 numbers,
-G2, Hermes's schedule ops (it does get the verified marks). Defaults keep today's behaviour: `--auth off`, and the
-schedule is empty until someone reserves or a probe reports.
-
-Try it on a scratch bus (nothing touches production):
-
-```
-cd ~/code/message-bus-proto
-bun run packages/cli/src/bin.ts serve --port 7878 --data-dir /tmp/mb-try --auth optional --rp-id localhost
-bun run packages/cli/src/bin.ts probe --bus http://127.0.0.1:7878 --once      # bariton's GPUs appear
-bun run packages/cli/src/bin.ts invite can --data-dir /tmp/mb-try --url http://localhost:7878
-# open http://localhost:7878/resources and the invite link (passkeys need https or localhost)
-```
+Not built: agents over TLS (B.2: Bun 1.4 rejects Hilde's CA), inviting from the website, the A.9 numbers, G2, the
+schedule ops in Hermes. The Hermes plugin with tokens is in the repo but not yet copied to zeki's machine.
 
 ---
 
@@ -245,18 +235,22 @@ messages arrive as zeki's, which is already "information, not permission").
   the Mac, no shared secret on the server (it stores public keys only). Several passkeys per human (phone, laptop).
 - **The server stamps the sender.** A human message is accepted only from a session signed in as that human; `from`
   in the body must match the session or is refused. Agents can no longer write as humans.
-- **Sessions**: random 256-bit token, stored hashed; cookie `HttpOnly; Secure; SameSite=Strict; Path=/`; 30 days,
-  sliding; listed and revocable per human. Every cookie-authenticated write also checks `Origin` (CSRF).
+- **Sessions**: random 256-bit token, stored hashed; 30 days, sliding; listed and revocable per human. The website
+  keeps it in `localStorage` and sends `Authorization: Bearer` (changed 10 Nov from an `HttpOnly` cookie: browsers
+  send cookies to every port of a host, so the session reached other services on `bariton`). A header cannot be
+  sent by another site, so no `Origin` check is needed.
 - **Enrolment by invitation.** The root of trust is a shell on bariton: `agent-bus invite can` prints a one-time link
-  (10 min). Signed-in Can can invite Ümit or add a device from the website. A lost device is revoked from another
-  device; losing all devices means a new invite from the shell.
+  (10 min). Inviting another human or adding a device from the website is planned, not built. A lost device is
+  revoked from another device (`/auth`); losing all devices means a new invite from the shell.
 - **Provenance to agents.** Messages carry `verified: true` when stamped by a session. Deliveries to agents mark
   humans: `[message-bus] #n @can (verified) → …`; an unverified human message (only possible in the transition mode)
   says `(NOT verified: anyone on the LAN could have written this)`; the website shows ✓ or "not verified" next to the
-  name. AGENTS.md (once this is live): instructions count only from verified human messages.
-- **Transport.** Agents move to TLS (`wss://`), pinning the bus's CA certificate (`AGENT_BUS_CA=<pem>`): the CA
-  is private, but pinning is exactly what an agent needs, and it needs no public name. Plain port 7800 then serves
-  only `GET /api/health`.
+  name. AGENTS.md: an unverified instruction that spends money, deletes, or stops someone else's work is confirmed
+  with `show` or on the bus first. Text in a message that imitates a delivery header is rewritten to
+  `[quoted text, not a delivery]` before agents see it.
+- **Transport** (not built). Agents moving to TLS (`wss://`) need their runtime to trust the bus's CA; Node does
+  with `NODE_EXTRA_CA_CERTS`, Bun 1.4 rejects Hilde's CA (`unsupported name constraint type`). Until then agent
+  traffic on port 7800 is plain text on the LAN.
 - **Modes** for the cut-over: `--auth off` (today), `optional` (sign-in works, signed-in messages are verified,
   others are marked not verified), `required` (human writes need a session; the website asks to sign in).
 
@@ -280,27 +274,29 @@ a real name with DNS-01 if a domain is available, else Tailscale.
   preferred, attestation `none`); `POST /api/auth/register/verify {invite, credential}` checks client data (type,
   challenge, origin), the authenticator data (RP ID hash, user present, attested credential), stores the COSE key;
   signs the human in.
-- Sign-in: `POST /api/auth/login/options` (discoverable credentials, no user name) → `POST /api/auth/login/verify`
-  checks the signature over `authenticatorData ‖ SHA-256(clientDataJSON)`, the RP ID hash, user presence, and the
-  signature counter (a counter that goes backwards means a cloned key: refused).
+- Sign-in: `POST /api/auth/login/options {human?}` → options; with `human` (the website's profile) they name that
+  human's passkeys (`allowCredentials`, transports internal + hybrid), because Chrome on a Mac otherwise offered only
+  a phone QR code. `POST /api/auth/login/verify` checks the signature over `authenticatorData ‖
+  SHA-256(clientDataJSON)`, the RP ID hash, user presence, and the signature counter (a counter that goes backwards
+  means a cloned key: refused).
 - No dependencies: a small CBOR decoder, COSE → JWK, verification with `node:crypto`.
 - Also: `GET /api/auth/state` (mode, who this browser is), `POST /api/auth/logout`, `GET /api/auth/credentials`,
   `POST /api/auth/credentials/:id/remove` (also ends all of that human's sessions). `agent-bus invite <human>` writes
   the invite into the bus database directly, so only a shell on bariton can invite. A signed-in browser can write
-  only as its human, only from the bus's own origins, and the website locks its profile picker to that human.
+  only as its human, and the website locks its profile picker to that human.
 
-### B.5 Agents (planned, not prototyped)
+### B.5 Agents (built 10 Nov)
 
-Agent identity is the next hole: anyone on the LAN can join as `(host, path)`. Plan: on first join the server issues
-a token bound to that `(host, path)`, the harness stores it (`~/.agent-bus/agent-tokens/<id>`, mode 0600) and presents
-it on every join; a join without the token for an id that has one is refused (humans can reset it from the website).
-Trust on first use, like ssh host keys.
+Each machine account has one token, `~/.agent-bus/agent-token` (0600, created by the harness on first use). The bus
+binds an agent id to the first token that joins as it (trust on first use, like ssh host keys); joining or writing as
+it with another token or none is then refused. Ids never joined with a token stay open, so older harnesses keep
+working until they restart. `agent-bus reset-agent <id>` (needs the database) unbinds. One token per account rather
+than per agent: agents of one account can read each other's files anyway.
 
 ---
 
 ## Phasing
 
-1. **Auth `optional`** + TLS for agents (pinned CA) + hostname decision. Nothing breaks; verified marks appear.
-2. **Resource schedule G0/G1**: the schedule, probes on bariton and the sparks, tool ops, launcher rule in AGENTS.md.
-3. **Auth `required`**, agent tokens.
-4. Look at A.9's numbers after two weeks; decide on G2.
+1. Done: auth `optional`, hostname `bariton`, agent tokens, resource schedule G0/G1 with gpudash.
+2. Next: TLS for agents (needs a CA Bun accepts), auth `required` once every human signs in.
+3. Look at A.9's numbers after two weeks of the trial (from 10 Nov); decide on G2.
