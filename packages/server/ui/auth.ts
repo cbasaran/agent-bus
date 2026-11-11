@@ -1,11 +1,7 @@
 // The sign-in page (experimental; docs/design/resources-and-auth.md part B): create a passkey from an invite link
 // (/auth#invite=<token>), sign in with one, list and remove your passkeys, sign out.
-
-function el<T extends HTMLElement>(id: string): T {
-  const found = document.getElementById(id);
-  if (!found) throw new Error(`#${id} missing`);
-  return found as T;
-}
+import { api, postJson, PROFILE_KEY, SESSION_KEY } from "./api";
+import { el } from "./html";
 
 const show = (id: string): void => {
   el(id).hidden = false;
@@ -22,19 +18,6 @@ const fromB64url = (text: string): ArrayBuffer => {
   return Uint8Array.from(bin, (c) => c.charCodeAt(0)).buffer;
 };
 
-/** The session the bus hands out at sign-in; the conversations page (app.ts) sends it with every request. */
-const SESSION_KEY = "agent-bus.session";
-
-async function api<T>(path: string, body?: unknown): Promise<T> {
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  const session = localStorage.getItem(SESSION_KEY);
-  if (session) headers.Authorization = `Bearer ${session}`;
-  const res = await fetch(path, body === undefined ? { headers } : { method: "POST", headers, body: JSON.stringify(body) });
-  const data = (await res.json().catch(() => ({}))) as T & { error?: string };
-  if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
-  return data;
-}
-
 interface CreationOptions {
   challenge: string;
   rp: { id: string; name: string };
@@ -47,7 +30,7 @@ interface CreationOptions {
 }
 
 async function enroll(invite: string): Promise<void> {
-  const o = await api<CreationOptions>("/api/auth/register/options", { invite });
+  const o = await postJson<CreationOptions>("/api/auth/register/options", { invite });
   const credential = (await navigator.credentials.create({
     publicKey: {
       ...o,
@@ -58,7 +41,7 @@ async function enroll(invite: string): Promise<void> {
   })) as PublicKeyCredential | null;
   if (!credential) throw new Error("No passkey was made");
   const response = credential.response as AuthenticatorAttestationResponse;
-  const done = await api<{ session: string }>("/api/auth/register/verify", {
+  const done = await postJson<{ session: string }>("/api/auth/register/verify", {
     invite,
     credential: { id: credential.id, type: credential.type, response: { clientDataJSON: toB64url(response.clientDataJSON), attestationObject: toB64url(response.attestationObject) } },
   });
@@ -68,8 +51,8 @@ async function enroll(invite: string): Promise<void> {
 
 async function signIn(): Promise<void> {
   // The profile picked on the conversations page: its passkeys are named in the request (see loginOptions).
-  const human = localStorage.getItem("agent-bus.profile") ?? undefined;
-  const o = await api<{
+  const human = localStorage.getItem(PROFILE_KEY) ?? undefined;
+  const o = await postJson<{
     challenge: string;
     rpId: string;
     userVerification: UserVerificationRequirement;
@@ -87,7 +70,7 @@ async function signIn(): Promise<void> {
   })) as PublicKeyCredential | null;
   if (!credential) throw new Error("No passkey was chosen");
   const response = credential.response as AuthenticatorAssertionResponse;
-  const done = await api<{ session: string }>("/api/auth/login/verify", {
+  const done = await postJson<{ session: string }>("/api/auth/login/verify", {
     credential: {
       id: credential.id,
       type: credential.type,
@@ -105,7 +88,7 @@ async function signIn(): Promise<void> {
 async function renderMe(me: string): Promise<void> {
   show("auth-me");
   el("auth-me-name").textContent = me;
-  localStorage.setItem("agent-bus.profile", me);
+  localStorage.setItem(PROFILE_KEY, me);
   const { credentials } = await api<{ credentials: Array<{ id: string; label: string; createdAt: number; lastUsedAt: number | null }> }>("/api/auth/credentials");
   const list = el<HTMLUListElement>("auth-credentials");
   list.replaceChildren(
@@ -119,7 +102,7 @@ async function renderMe(me: string): Promise<void> {
       remove.textContent = "Remove";
       remove.addEventListener("click", () => {
         if (!confirm(`Remove the passkey "${c.label}"? You will be signed out everywhere.`)) return;
-        api(`/api/auth/credentials/${encodeURIComponent(c.id)}/remove`, {}).then(
+        postJson(`/api/auth/credentials/${encodeURIComponent(c.id)}/remove`, {}).then(
           () => {
             localStorage.removeItem(SESSION_KEY);
             location.reload();
@@ -157,7 +140,7 @@ async function boot(): Promise<void> {
   const invite = new URLSearchParams(location.hash.slice(1)).get("invite");
   if (invite) {
     try {
-      const o = await api<CreationOptions>("/api/auth/register/options", { invite });
+      const o = await postJson<CreationOptions>("/api/auth/register/options", { invite });
       show("auth-enroll");
       el("auth-enroll-human").textContent = o.user.name;
       el("auth-enroll-btn").addEventListener("click", run(() => enroll(invite)));
@@ -172,7 +155,7 @@ async function boot(): Promise<void> {
 }
 
 el("auth-signout-btn").addEventListener("click", () => {
-  void api("/api/auth/logout", {}).finally(() => {
+  void postJson("/api/auth/logout", {}).finally(() => {
     localStorage.removeItem(SESSION_KEY);
     location.reload();
   });
