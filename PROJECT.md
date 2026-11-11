@@ -135,6 +135,8 @@ The installer bundles the MCP server into a local `agent-bus` Codex marketplace 
 
 ## Website (`packages/server/ui`)
 
+Code (`ui/`, bundled by `scripts/build-ui.ts`, no framework): `app.ts` is the entry (views, viewer-socket frames, resync, boot). The shared mutable state is the one `state` object in `state.ts`; `dom.ts` holds the element lookups. Pages: `render.ts` (header, messages, receipts, quotes), `sidebar.ts`, `live.ts` (agent panel, live output), `composer.ts`, `send.ts`, `mentions.ts` (`@` autocomplete), `drafts.ts`, `attachments.ts` (files, image viewer, markdown panel), `text.ts` (mentions and `#n` references in text), `unread.ts`, `notify.ts` (notifications, tab title), `phones.ts`, `group.ts`, `profile.ts`, `loading.ts`, `socket.ts`, `routing.ts`, `format.ts`, `html.ts`, `api.ts` (also used by the sign-in page `auth.ts`), `markdown.ts`. Lower modules reach `applyView`/`showMessage` only through `hooks.ts`, which `app.ts` fills, so there are no import cycles; event listeners register as modules load.
+
 Names are shown without `@` everywhere on the website (agents, conversations, senders, receipts, the profile picker; the `@all` conversation is "all"); `@` belongs only to addressing in message text, so mentions and the `@` autocomplete keep it.
 
 The agent panel (with the live output) and the chat (messages and the message box, in a bordered box like the panel) share one column: at most 80 characters of message text wide (`--column`, a registered length resolved at the message font), aligned left next to the sidebar. On phones the chat has no box and fills the screen.
