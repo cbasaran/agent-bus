@@ -1,11 +1,8 @@
 import { networkInterfaces } from "node:os";
 
 export interface ResolvedLanAddresses {
-  addresses: string[];
   lanUrls: string[];
-  wsUrls: string[];
   localUrl: string;
-  localWsUrl: string;
 }
 
 function isPrivateLanIpv4(ip: string): boolean {
@@ -73,17 +70,9 @@ export function resolveLanAddresses(port: number, host = "0.0.0.0"): ResolvedLan
   }
 
   const lanUrls = addresses.map((addr) => `http://${formatHostForUrl(addr)}:${port}`);
-  const wsUrls = addresses.map((addr) => `ws://${formatHostForUrl(addr)}:${port}/ws`);
 
   const connectHost = isWildcard || isLoopback ? "127.0.0.1" : formatHostForUrl(trimmedHost);
   const localUrl = `http://${connectHost}:${port}`;
-  const localWsUrl = `ws://${connectHost}:${port}/ws`;
 
-  return {
-    addresses,
-    lanUrls,
-    wsUrls,
-    localUrl,
-    localWsUrl,
-  };
+  return { lanUrls, localUrl };
 }
