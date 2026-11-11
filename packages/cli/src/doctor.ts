@@ -32,7 +32,8 @@ export async function runDoctor(urlOverride?: string): Promise<number> {
   lines.push(`Harnesses on ${os.hostname()}:`);
   for (const h of HARNESSES) {
     const status = h.status({});
-    const cli = h.command === undefined ? "" : Bun.which(h.command) ? `, ${h.command} on PATH` : `, ${h.command} not on PATH`;
+    const found = h.command === undefined ? undefined : Bun.which(h.command) ? "on PATH" : h.commandAt && existsSync(h.commandAt) ? `at ${h.commandAt}` : undefined;
+    const cli = h.command === undefined ? "" : `, ${h.command} ${found ?? "not found"}`;
     if (!status.installed) {
       lines.push(`  - ${h.name}: not installed${cli}`);
       continue;

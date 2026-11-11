@@ -25,6 +25,8 @@ export interface Harness {
   title: string;
   /** The harness's own command, when it has one (doctor says whether it is on PATH). */
   command?: string;
+  /** Where the harness's installer puts its command when that is not on PATH (pi: ~/.pi/agent/bin/pi). */
+  commandAt?: string;
   install(opts: InstallOptions): Promise<void>;
   uninstall(opts: InstallOptions): Promise<void>;
   status(opts: InstallOptions): InstallStatus;
@@ -46,6 +48,7 @@ function loaderHarness(name: "omp" | "pi", title: string, defaultDir: string): H
     name,
     title,
     command: name,
+    commandAt: name === "pi" ? path.join(os.homedir(), ".pi", "agent", "bin", "pi") : undefined,
     async install(opts) {
       const file = fileOf(opts);
       const previous = existsSync(file) ? loaderUrl(readFileSync(file, "utf8")) : undefined;

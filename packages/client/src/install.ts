@@ -95,7 +95,7 @@ export function removeOwnedDir(dir: string, manifest: string, name: string, kind
   rmSync(dir, { recursive: true });
 }
 
-/** The first line of every single file agent-bus writes (extension loaders, the CLI wrapper): marks it as ours. */
+/** In the first comment line of every single file agent-bus writes (extension loaders, the CLI wrapper): marks it ours. */
 export const OWNED_MARK = "agent-bus install";
 
 /**
@@ -120,11 +120,15 @@ export function writeOwnedFile(file: string, content: string, force = false, mod
   writeFileSync(file, content, { mode });
 }
 
-/** Whether `file` is a regular file agent-bus wrote (a link is never ours: it points at someone else's file). */
+/**
+ * Whether `file` is a regular file agent-bus wrote: the mark in its first line, or its second after a `#!` line.
+ * A link is never ours: it points at someone else's file.
+ */
 export function isOwnedFile(file: string): boolean {
   try {
     if (!lstatSync(file).isFile()) return false;
-    return readFileSync(file, "utf8").split("\n", 1)[0]?.includes(OWNED_MARK) ?? false;
+    const [first = "", second = ""] = readFileSync(file, "utf8").split("\n", 2);
+    return (first.startsWith("#!") ? second : first).includes(OWNED_MARK);
   } catch {
     return false;
   }

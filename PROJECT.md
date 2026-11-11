@@ -8,15 +8,15 @@ Bun + TypeScript monorepo (`packages/*`, zero runtime npm dependencies):
 
 - `packages/protocol` (`@agent-bus/protocol`) — wire types (`types.ts`: participants, conversations, messages, WS frames, HTTP bodies) and the shared rules (`address.ts`: `parseAddress`, `formatAddress`, `replyAddress`, `shouldWake`, `baseAgentId`, `canonicalAddress`, `qualifiedAgentId`, `slugifyId`).
 - `packages/server` (`@agent-bus/server`; exports `createBusServer`, `createInvite`, `groupConversationId`) — `server.ts` is the composition root (options, `Bun.serve` HTTP + WebSocket + optional HTTPS, start/stop, the route table); `http.ts` (JSON, `HttpError`, CORS), `hub.ts` (live agent and viewer sockets, participants, broadcasts, receipts, live-output relay), `context.ts` (`BusContext`, writer checks incl. agent tokens), `agents.ts` (agent join/ack/seen/status, settings, forgetting offline agents), `messages.ts` (writing, recipients, `@resources` notices, message pages), `reading.ts` (inbox, history, search), `files.ts`, `schedule-routes.ts` + `resources.ts` (resource schedule, gpudash polling), `auth-routes.ts` + `auth.ts` + `webauthn.ts` (passkeys), `website.ts` (serves `public/`, or bundles `ui/` on the fly when any `ui/*.ts` is newer); SQLite store (`db.ts`), LAN address discovery (`lan.ts`), website sources (`ui/` → built to `public/` by `scripts/build-ui.ts`).
-- `packages/cli` (`@agent-bus/cli`) — `agent-bus` (`src/bin.ts`): `serve` (used by systemd), `invite`, `reset-agent`, `run` (`src/run.ts`, the GPU ticket launcher).
+- `packages/cli` (`@agent-bus/cli`) — `agent-bus` (`src/bin.ts`): `serve` (used by systemd), `invite`, `reset-agent`, `run` (`src/run.ts`, the GPU ticket launcher), `install`/`uninstall <harness>` (`src/harnesses.ts`: omp/pi extension loaders, the Claude Code, Codex and Antigravity plugin installers in their packages' `scripts/install.ts`, the `cli` wrapper in `~/.local/bin`) and `doctor` (`src/doctor.ts`). User docs: `docs/install.md`, `docs/harnesses/*.md`.
 - `packages/client` — harness-neutral bus client shared by the omp and pi extensions and the Antigravity, Claude Code and Codex plugins (runs on Bun and Node; `node:*` only, except `install.ts`): `connection.ts` (agent socket, reconnect, ordered delivery + ack, receipts, write/read calls, file up/download, the agent token), `tool.ts` (the `message-bus` tool: parameter list and JSON schema, description, ops, delivery and read-result texts), `activity.ts` (live-output log), `status.ts` (`StatusTracker`: busy/idle, running tools, activity, 250 ms coalescing), `held.ts` (`HeldQueue`: deliveries held for a hook, the 9 500-char budget, seen once), `mcp.ts` (`McpToolServer`: the stdio JSON-RPC loop), `hook-socket.ts` (the plugin's local socket and the hook process that relays to it), `tail.ts` (`LineTail`: following a JSONL transcript), `runtime.ts` (bus URL from env or the installed `config.json`, plugin log, real folder), `install.ts` (Bun-only installer helpers: args, bundling for Node, writing JSON, the harness CLI). Each harness package only wires its events to these.
 - `packages/omp-extension` — omp extension: binds the client to omp (session events, delivery modes, status, live output) and registers the tool.
 - `packages/pi-extension` — pi extension (earendil-works pi-coding-agent): the same binding for pi's extension API.
-- `packages/antigravity-plugin` — Antigravity plugin: a daemon run as the plugin's MCP server (one bus agent per workspace folder, the tool) plus lifecycle hooks; installed with `bun run install:antigravity`.
-- `packages/claude-plugin` — Claude Code plugin: an MCP server per session (the session's bus agent, the tool, a channel for incoming messages) plus lifecycle hooks; installed with `bun run install:claude`.
-- `packages/codex-plugin` — Codex plugin: an MCP server per task (the task's bus agent and tool) plus lifecycle hooks that inject incoming messages; installed with `bun run install:codex`.
+- `packages/antigravity-plugin` — Antigravity plugin: a daemon run as the plugin's MCP server (one bus agent per workspace folder, the tool) plus lifecycle hooks; installed with `agent-bus install antigravity`.
+- `packages/claude-plugin` — Claude Code plugin: an MCP server per session (the session's bus agent, the tool, a channel for incoming messages) plus lifecycle hooks; installed with `agent-bus install claude`.
+- `packages/codex-plugin` — Codex plugin: an MCP server per task (the task's bus agent and tool) plus lifecycle hooks that inject incoming messages; installed with `agent-bus install codex`.
 - `packages/hermes-plugin/message-bus` — Hermes plugin (Python, stdlib + the Hermes runtime's `websockets`): joins by name and provides the same `message-bus` tool.
-- `tests/` — `server.test.ts` (server semantics over real sockets), `resources.test.ts` (the schedule with a fake clock, and over HTTP), `auth.test.ts` (passkeys with a software authenticator, forged headers), `client-shared.test.ts` (held budget, plugin URL, hook relay), `omp-extension.test.ts` (extension against a real server with a fake omp API), `pi-extension.test.ts` (same, fake pi API), `antigravity-plugin.test.ts` (daemon and hooks against a real server with a fake `agentapi`; transcript follower), `claude-plugin.test.ts` (session, hooks and MCP server against a real server with a fake channel; transcript follower), `codex-plugin.test.ts` (task, hooks and MCP server against a real server); `tests/setup.ts` (preloaded via `bunfig.toml`) points the agent token at a temp file; `tests/smoke/codex-reopen.mjs` is a manual macOS smoke test.
+- `tests/` — `server.test.ts` (server semantics over real sockets), `resources.test.ts` (the schedule with a fake clock, and over HTTP), `auth.test.ts` (passkeys with a software authenticator, forged headers), `client-shared.test.ts` (held budget, plugin URL, hook relay), `omp-extension.test.ts` (extension against a real server with a fake omp API), `pi-extension.test.ts` (same, fake pi API), `antigravity-plugin.test.ts` (daemon and hooks against a real server with a fake `agentapi`; transcript follower), `claude-plugin.test.ts` (session, hooks and MCP server against a real server with a fake channel; transcript follower), `codex-plugin.test.ts` (task, hooks and MCP server against a real server); `tests/setup.ts` (preloaded via `bunfig.toml`) points the agent token at a temp file; `tests/smoke/codex-reopen.mjs` is a manual macOS smoke test; `tests/e2e/` (`run.ts`, `fake-model.ts`, `Dockerfile`) installs omp, pi, Claude Code and Codex on a clean container and drives them with a fake model (`bun tests/e2e/run.ts`; Docker and the harnesses on the host; not part of `bun test`).
 
 ## Model
 
@@ -81,7 +81,7 @@ Deployed for `@zeki` on `omarchy-zeki` (`ssh zeki`, 192.168.1.134; Can's `#gener
 Install on the machine running Antigravity (needs this checkout and Bun; runs on Node if installed, else Bun):
 
 ```sh
-bun run install:antigravity --url http://192.168.1.126:7800    # again to update; --uninstall to remove
+agent-bus install antigravity --url http://192.168.1.126:7800    # again to update; agent-bus uninstall antigravity to remove
 ```
 
 It builds `dist/daemon.mjs` and `dist/hook.mjs` (self-contained) and writes a copy of the plugin to `~/.gemini/config/plugins/message-bus/` (`--dir` for another place): `plugin.json`, `hooks.json` and `mcp_config.json` (with the runtime's absolute path, because Antigravity's GUI `PATH` may lack it), `config.json` (`busUrl`; `AGENT_BUS_URL` overrides) and `METADATA`. A link to the checkout from an earlier install is replaced, nothing else is. Then it asks a running Antigravity to restart its MCP servers (`RefreshMcpServers` on the hub's HTTP port with its CSRF token, from `~/.gemini/antigravity/daemon/hub_<port>.json`); otherwise Antigravity loads it at its next start.
@@ -102,7 +102,7 @@ An earlier attempt (built by the Antigravity agent on Can's Mac, 9 Nov) used fil
 Install on the machine running Claude Code (needs this checkout, Bun and the `claude` CLI; runs on Node if installed, else Bun):
 
 ```sh
-bun run install:claude --url http://192.168.1.126:7800    # again to update; --uninstall to remove
+agent-bus install claude --url http://192.168.1.126:7800    # again to update; agent-bus uninstall claude to remove
 claude --dangerously-load-development-channels plugin:message-bus@agent-bus    # start sessions like this (alias it)
 ```
 
@@ -123,7 +123,7 @@ How it works, and the Claude Code facts it rests on (tested on Claude Code 2.1.3
 Install on the machine running Codex (needs this checkout, Bun and the `codex` CLI):
 
 ```sh
-bun run install:codex --url http://192.168.1.126:7800    # again to update; --uninstall to remove
+agent-bus install codex --url http://192.168.1.126:7800    # again to update; agent-bus uninstall codex to remove
 ```
 
 The installer bundles the MCP server into a local `agent-bus` Codex marketplace under `~/.agent-bus/codex-marketplace/`, registers the marketplace, and installs its `message-bus` plugin. Review and trust the plugin's [lifecycle hooks](https://learn.chatgpt.com/docs/hooks) in Codex and reopen the task after an update. `--dir` chooses another marketplace root; `--build-only` writes it without changing Codex configuration.
@@ -183,4 +183,6 @@ Unread and attention (per profile, per browser): each conversation shows its unr
 - `bun run serve -- --port 7800`
 - `bun run typecheck`
 - `bun test tests`
+- `bun tests/e2e/run.ts [omp] [pi] [claude] [codex]` — install and drive each harness in a clean container (about 2 min)
+- `bun run agent-bus install cli`, then `agent-bus install <harness> --url …`, `agent-bus doctor` (see `docs/install.md`)
 - `agent-bus run <reservation> -- <command>` — run on the reserved GPUs only
