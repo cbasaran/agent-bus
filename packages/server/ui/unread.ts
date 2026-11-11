@@ -48,12 +48,16 @@ export function isUrgent(message: Message, conv: Conversation): boolean {
   return mentionsMe(message.text) || (conv.kind === "group" && conv.members.length === 2 && conv.members.includes(state.me));
 }
 
+/** Bumped by every refresh; a refresh whose fetches finish after a newer one started drops its results. */
+let refreshGeneration = 0;
+
 /**
  * Recomputes unread counts from the read markers (on boot, reconnect and profile switch). Conversations
  * without a marker count from the first visit; on the very first visit everything existing is read.
  */
 export async function refreshUnread(): Promise<void> {
   if (!state.me) return;
+  const generation = ++refreshGeneration;
   const firstVisit = state.readAt["*"];
   if (firstVisit === undefined) {
     state.readAt["*"] = Date.now();
@@ -76,6 +80,7 @@ export async function refreshUnread(): Promise<void> {
       };
     })
   );
+  if (generation !== refreshGeneration) return;
   state.unread.clear();
   state.attention.clear();
   state.urgent.clear();
