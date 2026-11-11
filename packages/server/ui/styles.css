@@ -783,6 +783,15 @@ button:disabled {
   background: var(--human-soft-hover);
 }
 
+/* Messages from others that mention the viewer (@me, @{…,me}): a slightly lighter background. */
+.msg-mentions-me {
+  background: #1d2330;
+}
+
+.msg-mentions-me:hover {
+  background: #232a38;
+}
+
 .msg-head {
   display: flex;
   align-items: baseline;

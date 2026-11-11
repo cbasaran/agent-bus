@@ -1248,6 +1248,7 @@ function renderMessage(message: Message, continued: boolean): HTMLLIElement {
   const human = message.fromKind === "human";
   const li = h("li", `msg ${human ? "msg-human" : "msg-agent"}`);
   if (message.from === state.me) li.classList.add("msg-mine");
+  else if (message.text && mentionsMe(message.text)) li.classList.add("msg-mentions-me");
   if (continued) li.classList.add("msg-continued");
   li.dataset.seq = String(message.seq);
 
