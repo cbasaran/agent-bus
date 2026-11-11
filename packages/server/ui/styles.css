@@ -1301,7 +1301,7 @@ ul.md-list ul.md-list { list-style: circle; }
   display: block;
   width: 100%;
   min-height: 40px;
-  /* Grows with its text up to 240px (app.ts autosize), or the height dragged with the grip above it. */
+  /* Grows with its text up to 240px (composer.ts autosize), or the height dragged with the grip above it. */
   resize: none;
   padding: 9px 12px;
   border: 1px solid var(--border);
@@ -1539,7 +1539,7 @@ ul.md-list ul.md-list { list-style: circle; }
 
 @media (max-width: 640px) {
   /* One screen at a time: the open conversation, or (.phone-list) the top bar and the conversation list.
-     The page is pinned to the visible area above the iOS keyboard (--vvh, --vvt set by app.ts). */
+     The page is pinned to the visible area above the iOS keyboard (--vvh, --vvt set by phones.ts). */
   .app,
   .app.with-doc {
     position: fixed;
