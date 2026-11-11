@@ -13,17 +13,19 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { ActivityLog, contentText, contentThinking } from "../../client/src/activity";
 import { BusConnection, type Delivery } from "../../client/src/connection";
+import { UnseenSeqs } from "../../client/src/held";
+import { envBusUrl } from "../../client/src/runtime";
+import { StatusTracker } from "../../client/src/status";
 import {
   BusTool,
   deliveryText,
-  isUnderTempDir,
+  isScratchFolder,
   TOOL_NAME,
-  TOOL_PARAMS,
   toolDescription,
+  toolInputSchema,
   type MessageBusToolParams,
 } from "../../client/src/tool";
-import { deliveryHeaderSeqs } from "../../protocol/src/address";
-import { DEFAULT_BUS_PORT, type AgentStatus, type ReceiptFrame } from "../../protocol/src/types";
+import type { ReceiptFrame } from "../../protocol/src/types";
 
 export { TOOL_NAME, type MessageBusToolParams };
 
@@ -82,23 +84,10 @@ export interface MessageBusApi {
 
 /** How long a new session may take to join before the user is told it is not on the bus. */
 const JOIN_NOTICE_MS = 8000;
-/** Status reports are coalesced into one per this window (a batch of tool calls sends one report). */
-const STATUS_COALESCE_MS = 250;
-
-/** The tool's parameters as JSON Schema (pi validates tool arguments as JSON Schema, TypeBox or not). */
-function jsonParameters(): Record<string, unknown> {
-  const properties: Record<string, unknown> = {};
-  for (const param of TOOL_PARAMS) {
-    const type = param.type === "string[]" ? { type: "array", items: { type: "string" } } : { type: param.type };
-    properties[param.name] = { ...type, ...(param.enum ? { enum: [...param.enum] } : {}), description: param.description };
-  }
-  return { type: "object", properties, required: ["op"] };
-}
 
 /** Why a session does not join, or undefined when it does. */
 function notJoining(ctx: MessageBusContext, projectPath: string): string | undefined {
-  // Scratch sessions in the temp directory are not project agents (set AGENT_BUS_JOIN_FROM_TMP=1 to test there).
-  if (isUnderTempDir(projectPath) && process.env.AGENT_BUS_JOIN_FROM_TMP !== "1") return "session started in the temp directory";
+  if (isScratchFolder(projectPath)) return "session started in the temp directory";
   // `pi -p` / `--mode json` runs (scripts, subagents) would take the folder agent's messages.
   if ((ctx.mode === "print" || ctx.mode === "json") && process.env.AGENT_BUS_JOIN_NONINTERACTIVE !== "1") {
     return `non-interactive run (--mode ${ctx.mode})`;
@@ -110,6 +99,7 @@ export default function messageBus(pi: MessageBusApi): void {
   let connection: BusConnection | undefined;
   let tool: BusTool | undefined;
   let offBus = "this session has not started";
+  const log = (line: string): void => console.error(`[message-bus] ${line}`);
 
   const quietly = (content: string): void =>
     pi.sendMessage({ customType: TOOL_NAME, content, display: true }, { deliverAs: "nextTurn" });
@@ -120,7 +110,7 @@ export default function messageBus(pi: MessageBusApi): void {
   };
 
   /** Delivered seqs the model has not been given yet. */
-  const unseen = new Set<number>();
+  const unseen = new UnseenSeqs((seq) => connection?.markSeen(seq));
 
   const deliver = async (delivery: Delivery): Promise<void> => {
     const conn = connection;
@@ -133,11 +123,7 @@ export default function messageBus(pi: MessageBusApi): void {
 
   // A delivery is "seen" once its header is in what goes to the model.
   pi.on("context", (event) => {
-    const conn = connection;
-    if (!conn || unseen.size === 0) return;
-    for (const seq of deliveryHeaderSeqs(JSON.stringify(event.messages))) {
-      if (unseen.delete(seq)) conn.markSeen(seq);
-    }
+    if (connection && unseen.size > 0) unseen.seenIn(JSON.stringify(event.messages));
   });
 
   pi.on("session_start", (_event, ctx) => {
@@ -149,7 +135,7 @@ export default function messageBus(pi: MessageBusApi): void {
       if (ctx.mode === "tui" || ctx.mode === "rpc") ctx.ui?.notify(`message-bus: not joining (${reason})`, "info");
       return;
     }
-    const url = (process.env.AGENT_BUS_URL?.trim() || `http://127.0.0.1:${DEFAULT_BUS_PORT}`).replace(/\/+$/, "");
+    const url = envBusUrl();
     let announced = false;
     const conn = new BusConnection({
       url,
@@ -164,13 +150,12 @@ export default function messageBus(pi: MessageBusApi): void {
         announced = true;
         ctx.ui?.notify(`message-bus: on the bus as @${id}`, "info");
       },
-      onLog: (line) => console.error(`[message-bus] ${line}`),
+      onLog: log,
     });
     connection = conn;
     tool = new BusTool(conn);
     conn.connect();
-    // Stored by the connection and sent once it has joined (and after every rejoin).
-    publishStatus();
+    status.attach(conn);
     const notice = setTimeout(() => {
       if (connection !== conn || conn.connected) return;
       ctx.ui?.notify(
@@ -182,53 +167,16 @@ export default function messageBus(pi: MessageBusApi): void {
   });
 
   // ---- Status for the bus (website, GET /api/state): idle/busy and the running tool. No model turns. ----
-  let busy = false;
-  let since = Date.now();
-  const runningTools = new Map<string, { name: string; since: number }>();
-  let statusTimer: ReturnType<typeof setTimeout> | undefined;
-  const publishStatus = (): void => {
-    statusTimer = undefined;
-    const conn = connection;
-    if (!conn) return;
-    const status: AgentStatus = { state: busy ? "busy" : "idle", since };
-    const oldest = [...runningTools.values()].sort((a, b) => a.since - b.since)[0];
-    if (busy && oldest) {
-      status.tool = oldest.name;
-      status.toolSince = oldest.since;
-    }
-    try {
-      conn.reportStatus(status);
-    } catch (err) {
-      console.error(`[message-bus] status report failed: ${(err as Error).message}`);
-    }
-  };
-  /** Coalesces bursts (a batch of tool calls) into one report a moment later. */
-  const statusChanged = (): void => {
-    if (!connection || statusTimer) return;
-    statusTimer = setTimeout(publishStatus, STATUS_COALESCE_MS);
-  };
-  pi.on("agent_start", () => {
-    if (!busy) {
-      busy = true;
-      since = Date.now();
-    }
-    statusChanged();
-  });
+  const status = new StatusTracker(log);
+  pi.on("agent_start", () => status.setBusy());
   // `agent_end` may be followed by a retry, a compaction retry or a queued message; `agent_settled` is final.
-  pi.on("agent_settled", () => {
-    busy = false;
-    since = Date.now();
-    runningTools.clear();
-    statusChanged();
-  });
+  pi.on("agent_settled", () => status.setIdle());
   pi.on("tool_execution_start", (event) => {
-    runningTools.set(event.toolCallId, { name: event.toolName, since: Date.now() });
-    statusChanged();
+    status.toolStarted(event.toolCallId, event.toolName);
     if (connection) activityLog.toolStart(event.toolCallId, event.toolName, event.args, undefined);
   });
   pi.on("tool_execution_end", (event) => {
-    runningTools.delete(event.toolCallId);
-    statusChanged();
+    status.toolEnded(event.toolCallId);
     if (connection) activityLog.toolOutput(event.toolCallId, contentText(event.result?.content), event.isError ? "error" : "done");
   });
 
@@ -254,8 +202,7 @@ export default function messageBus(pi: MessageBusApi): void {
   pi.on("message_end", onMessage(true));
 
   pi.on("session_shutdown", () => {
-    clearTimeout(statusTimer);
-    statusTimer = undefined;
+    status.detach();
     activityLog.dispose();
     connection?.close();
     connection = undefined;
@@ -270,7 +217,7 @@ export default function messageBus(pi: MessageBusApi): void {
       arrives: "after your current tool calls finish, before your next step",
       notJoining: "sessions started in the temp directory and non-interactive runs (pi -p, --mode json) do not join",
     }),
-    parameters: jsonParameters(),
+    parameters: toolInputSchema(),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       if (!tool) throw new Error(`This session is not on the message bus: ${offBus}.`);
       return { content: [{ type: "text", text: await tool.run(params, ctx.cwd) }], details: {} };

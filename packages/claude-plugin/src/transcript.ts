@@ -2,10 +2,10 @@
 // record per line). Everything the model gets is written there before the request goes out, so it tells the plugin
 // which bus deliveries the model has seen (their `[message-bus] #n @` header is in it) and when the user interrupted
 // a turn. Its records also feed the live output on the website.
-import { closeSync, openSync, readSync, statSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { contentText, contentThinking, type ActivityLog } from "../../client/src/activity";
+import { LineTail } from "../../client/src/tail";
 import { deliveryHeaderSeqs } from "../../protocol/src/address";
 
 const POLL_MS = 500;
@@ -61,9 +61,7 @@ export interface TranscriptEvents {
 }
 
 export class TranscriptFollower {
-  private file: string | undefined;
-  private offset = 0;
-  private partial = "";
+  private readonly tail = new LineTail((line, live) => this.line(line, live));
   private timer: NodeJS.Timeout | undefined;
   /** Text and thinking of each assistant message so far (Claude Code writes one record per content block). */
   private readonly assistant = new Map<string, { at: number; text: string; thinking: string }>();
@@ -73,25 +71,12 @@ export class TranscriptFollower {
     private readonly log: ActivityLog
   ) {}
 
-  get path(): string | undefined {
-    return this.file;
-  }
-
   /** Follows `file` from now on (after `/clear` or a resume the session writes a new one). */
   follow(file: string): void {
-    if (file === this.file) return;
-    this.file = file;
-    this.partial = "";
+    if (file === this.tail.file) return;
     this.assistant.clear();
-    let size = 0;
-    try {
-      size = statSync(file).size;
-    } catch {
-      // Not written yet: read from its start once it is.
-    }
-    this.offset = Math.max(0, size - START_BYTES);
-    this.read(this.offset > 0);
-    this.timer ??= setInterval(() => this.read(false), POLL_MS);
+    this.tail.open(file, START_BYTES);
+    this.timer ??= setInterval(() => this.tail.read(), POLL_MS);
   }
 
   stop(): void {
@@ -100,48 +85,25 @@ export class TranscriptFollower {
   }
 
   /** Reads what was appended since the last read (hooks call this so they act on an up-to-date view). */
-  read(skipFirstLine = false): void {
-    if (!this.file) return;
-    let size: number;
+  read(): void {
+    this.tail.read();
+  }
+
+  /** `live`: false for the cut start of a long transcript (an interrupt there is old). */
+  private line(line: string, live: boolean): void {
+    let record: TranscriptRecord;
     try {
-      size = statSync(this.file).size;
+      record = JSON.parse(line) as TranscriptRecord;
     } catch {
-      return;
+      return; // cut by the start offset
     }
-    if (size < this.offset) {
-      this.offset = 0;
-      this.partial = "";
+    // A header anywhere in a record (prompt, channel event, hook context, request log) reached the model; queued
+    // input is logged before it does.
+    if (record.type !== "queue-operation" && line.includes("[message-bus] #")) {
+      const seqs = deliveryHeaderSeqs(line);
+      if (seqs.length > 0) this.events.onHeaders(seqs);
     }
-    if (size === this.offset) return;
-    const fd = openSync(this.file, "r");
-    let chunk: string;
-    try {
-      const buf = Buffer.alloc(size - this.offset);
-      readSync(fd, buf, 0, buf.length, this.offset);
-      this.offset = size;
-      chunk = buf.toString("utf8");
-    } finally {
-      closeSync(fd);
-    }
-    const lines = (this.partial + chunk).split("\n");
-    this.partial = lines.pop() ?? "";
-    if (skipFirstLine) lines.shift();
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      let record: TranscriptRecord;
-      try {
-        record = JSON.parse(line) as TranscriptRecord;
-      } catch {
-        continue; // cut by the start offset
-      }
-      // A header anywhere in a record (prompt, channel event, hook context, request log) reached the model; queued
-      // input is logged before it does.
-      if (record.type !== "queue-operation" && line.includes("[message-bus] #")) {
-        const seqs = deliveryHeaderSeqs(line);
-        if (seqs.length > 0) this.events.onHeaders(seqs);
-      }
-      this.record(record, !skipFirstLine);
-    }
+    this.record(record, live);
   }
 
   private record(record: TranscriptRecord, live: boolean): void {

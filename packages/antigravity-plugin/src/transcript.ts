@@ -1,8 +1,9 @@
 // Live output for Antigravity: follows a conversation's `transcript_full.jsonl` (append-only, one JSON step per line;
 // the plain `transcript.jsonl` truncates thinking and long outputs) and turns its steps into activity entries.
 // Only runs while someone watches the agent's page on the website.
-import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
+import { existsSync } from "node:fs";
 import type { ActivityLog } from "../../client/src/activity";
+import { LineTail } from "../../client/src/tail";
 
 const POLL_MS = 500;
 /** On start, only this much of the end of a long transcript is read (the log keeps the last 60 entries anyway). */
@@ -34,8 +35,13 @@ function userText(content: string): string {
 
 /** Feeds transcript steps into an ActivityLog. Tool results follow their call's step in order. */
 export class TranscriptActivity {
-  private offset = 0;
-  private partial = "";
+  private readonly tail = new LineTail((line) => {
+    try {
+      this.step(JSON.parse(line) as Step);
+    } catch {
+      // A line cut by the start offset, or not JSON: skip it.
+    }
+  });
   private timer: NodeJS.Timeout | undefined;
   private readonly openTools: string[] = [];
 
@@ -49,52 +55,16 @@ export class TranscriptActivity {
   /** Reads what is there (the tail of a long file) and keeps following appends. */
   start(): void {
     try {
-      const size = statSync(this.file).size;
-      this.offset = Math.max(0, size - START_BYTES);
-      this.partial = "";
-      this.read(this.offset > 0);
+      this.tail.open(this.file, START_BYTES);
     } catch {
-      // No transcript yet: the poll picks it up once it exists.
+      // Not readable yet: the poll picks it up once it is.
     }
-    this.timer = setInterval(() => this.read(false), POLL_MS);
+    this.timer = setInterval(() => this.tail.read(), POLL_MS);
   }
 
   stop(): void {
     clearInterval(this.timer);
     this.timer = undefined;
-  }
-
-  private read(skipFirstLine: boolean): void {
-    let size: number;
-    try {
-      size = statSync(this.file).size;
-    } catch {
-      return;
-    }
-    if (size < this.offset) {
-      this.offset = 0;
-      this.partial = "";
-    }
-    if (size === this.offset) return;
-    const fd = openSync(this.file, "r");
-    try {
-      const buf = Buffer.alloc(size - this.offset);
-      readSync(fd, buf, 0, buf.length, this.offset);
-      this.offset = size;
-      const lines = (this.partial + buf.toString("utf8")).split("\n");
-      this.partial = lines.pop() ?? "";
-      if (skipFirstLine) lines.shift();
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        try {
-          this.step(JSON.parse(line) as Step);
-        } catch {
-          // A line cut by the start offset, or not JSON: skip it.
-        }
-      }
-    } finally {
-      closeSync(fd);
-    }
   }
 
   private step(step: Step): void {

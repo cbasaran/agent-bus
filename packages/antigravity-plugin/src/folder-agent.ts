@@ -4,13 +4,14 @@
 import * as os from "node:os";
 import { ActivityLog } from "../../client/src/activity";
 import { BusConnection, type Delivery } from "../../client/src/connection";
+import { StatusTracker } from "../../client/src/status";
 import { BusTool, deliveryText } from "../../client/src/tool";
-import type { AgentStatus, ReceiptFrame } from "../../protocol/src/types";
+import type { ReceiptFrame } from "../../protocol/src/types";
 import type { AgentApi } from "./antigravity";
 import { fullTranscriptPath, TranscriptActivity } from "./transcript";
 
-/** Status reports are coalesced into one per this window. */
-const STATUS_COALESCE_MS = 250;
+/** Antigravity's tool hooks carry no call id: the latest PreToolUse names the running tool, kept under this key. */
+const RUNNING_TOOL = "tool";
 
 export interface FolderAgentOptions {
   folder: string;
@@ -39,12 +40,7 @@ export class FolderAgent {
   private readonly agentApi: AgentApi;
   private readonly log: (line: string) => void;
 
-  private busy = false;
-  private since = Date.now();
-  private runningTool: { name: string; since: number } | undefined;
-  private activity: string | undefined;
-  private statusTimer: NodeJS.Timeout | undefined;
-
+  private readonly status: StatusTracker;
   private readonly activityLog: ActivityLog;
   private follower: TranscriptActivity | undefined;
   private watching = false;
@@ -53,6 +49,7 @@ export class FolderAgent {
     this.folder = options.folder;
     this.agentApi = options.agentApi;
     this.log = options.log;
+    this.status = new StatusTracker(this.log);
     this.activityLog = new ActivityLog((events, replay) => this.conn.sendActivity(events, replay));
     this.conn = new BusConnection({
       url: options.busUrl,
@@ -67,11 +64,11 @@ export class FolderAgent {
     });
     this.tool = new BusTool(this.conn);
     this.conn.connect();
-    this.publishStatus();
+    this.status.attach(this.conn);
   }
 
   close(): void {
-    clearTimeout(this.statusTimer);
+    this.status.detach();
     this.follower?.stop();
     this.activityLog.dispose();
     this.conn.close();
@@ -114,7 +111,7 @@ export class FolderAgent {
       for (const seq of sent) this.conn.markSeen(seq);
       this.sentTo.delete(conversationId);
     }
-    this.setBusy();
+    this.status.setBusy();
     if (this.queued.length === 0) return undefined;
     const taken = this.queued.splice(0);
     for (const item of taken) if (item.seq !== undefined) this.conn.markSeen(item.seq);
@@ -131,48 +128,18 @@ export class FolderAgent {
 
   // ---- Status (website, GET /api/state) ----
 
-  private setBusy(): void {
-    if (this.busy) return;
-    this.busy = true;
-    this.since = Date.now();
-    this.statusChanged();
-  }
-
   toolStarted(name: string, summary: unknown): void {
-    this.setBusy();
-    this.runningTool = { name, since: Date.now() };
-    if (typeof summary === "string" && summary.trim()) this.activity = summary.trim();
-    this.statusChanged();
+    this.status.setBusy();
+    this.status.toolStarted(RUNNING_TOOL, name, summary);
   }
 
   toolEnded(): void {
-    this.runningTool = undefined;
-    this.statusChanged();
+    this.status.toolEnded(RUNNING_TOOL);
   }
 
   /** The conversation's execution loop ended (Antigravity's Stop). */
   stopped(): void {
-    this.busy = false;
-    this.since = Date.now();
-    this.runningTool = undefined;
-    this.activity = undefined;
-    this.statusChanged();
-  }
-
-  private statusChanged(): void {
-    if (this.statusTimer) return;
-    this.statusTimer = setTimeout(() => this.publishStatus(), STATUS_COALESCE_MS);
-  }
-
-  private publishStatus(): void {
-    this.statusTimer = undefined;
-    const status: AgentStatus = { state: this.busy ? "busy" : "idle", since: this.since };
-    if (this.busy && this.runningTool) {
-      status.tool = this.runningTool.name;
-      status.toolSince = this.runningTool.since;
-    }
-    if (this.busy && this.activity) status.activity = this.activity;
-    this.conn.reportStatus(status);
+    this.status.setIdle();
   }
 
   // ---- Live output (only while someone watches the agent's page) ----

@@ -1,18 +1,25 @@
-// One Codex task on the bus. Deliveries are held until a lifecycle hook can add them to model context.
+// One Codex task on the bus. Deliveries are held until a lifecycle hook can add them to model context; an idle task
+// gets a wake signal queued into it (`codex queue`), whose turn's hooks then hand the messages over.
 import * as os from "node:os";
 import { BusConnection, type Delivery } from "../../client/src/connection";
+import { HeldQueue, UnseenSeqs } from "../../client/src/held";
+import { StatusTracker } from "../../client/src/status";
 import { BusTool, deliveryText, type MessageBusToolParams } from "../../client/src/tool";
 import { replyAddress, shouldWake } from "../../protocol/src/address";
-import { DEFAULT_AGENT_SETTINGS, type AgentStatus, type ReceiptFrame } from "../../protocol/src/types";
+import { DEFAULT_AGENT_SETTINGS, type ReceiptFrame } from "../../protocol/src/types";
+import { isThreadId, LiveOutput } from "./live-output";
 import { queueWake } from "./wake";
-import { LiveOutput, isThreadId } from "./live-output";
 
-const STATUS_COALESCE_MS = 250;
-const CONTEXT_BUDGET = 9_500;
+/** A wake signal waits this long, so a burst needs one and a racing user prompt can take the delivery first. */
+const WAKE_DELAY_MS = 150;
+/** How long a hook may wait for the startup inbox recovery before it answers without it (offline bus). */
+const STARTUP_WAIT_MS = 1000;
 
+/** The MCP tool the plugin's hooks call (Codex hooks of type `mcp_tool`). */
 export const HOOK_TOOL = "codex_bus_hook";
 export const HOOK_EVENTS = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "Interrupt"] as const;
-export type HookEvent = typeof HOOK_EVENTS[number];
+export type HookEvent = (typeof HOOK_EVENTS)[number];
+
 export interface HookInput {
   session_id?: string;
   transcript_path?: string | null;
@@ -25,19 +32,15 @@ export interface HookInput {
   agent_id?: string;
 }
 
-interface Held { text: string; seq?: number; wake: boolean }
-
 export class CodexSession {
   readonly conn: BusConnection;
   readonly tool: BusTool;
-  private readonly held: Held[] = [];
-  private readonly unseen = new Set<number>();
-  private busy = false;
-  private since = Date.now();
-  private readonly runningTools = new Map<string, { name: string; since: number }>();
-  private statusTimer: ReturnType<typeof setTimeout> | undefined;
+  private readonly unseen = new UnseenSeqs((seq) => this.conn.markSeen(seq));
+  private readonly held = new HeldQueue(this.unseen);
+  private readonly status: StatusTracker;
   private readonly startup = Promise.withResolvers<void>();
   private restoring = false;
+  /** Seqs recovered from the inbox at startup: their live delivery (a replay) is not held twice. */
   private readonly restored = new Set<number>();
   private startupWait?: Promise<void>;
   private threadId?: string;
@@ -46,16 +49,13 @@ export class CodexSession {
   private closed = false;
   private readonly live = new LiveOutput((events, replay) => this.conn.sendActivity(events, replay));
 
-  // Allow the first prompt to include an old queued delivery, without stalling hooks when offline.
-  waitForStartup(): Promise<void> {
-    return this.startupWait ??= new Promise((resolve) => {
-      const timer = setTimeout(resolve, 1000);
-      void this.startup.promise.then(() => { clearTimeout(timer); resolve(); });
-    });
-  }
-
-  constructor(readonly folder: string, busUrl: string, private readonly log: (line: string) => void = () => {},
-    private readonly wake: (threadId: string) => Promise<void> = queueWake) {
+  constructor(
+    readonly folder: string,
+    busUrl: string,
+    private readonly log: (line: string) => void = () => {},
+    private readonly wake: (threadId: string) => Promise<void> = queueWake
+  ) {
+    this.status = new StatusTracker(log);
     this.conn = new BusConnection({
       url: busUrl,
       host: os.hostname(),
@@ -71,21 +71,34 @@ export class CodexSession {
         this.log(`on the bus as @${id} (${folder})`);
         if (!this.restoring) {
           this.restoring = true;
-          void this.restoreHeld(id).catch((err) => this.log(`restore inbox: ${err}`)).finally(() => this.startup.resolve());
+          void this.restoreHeld(id)
+            .catch((err) => this.log(`restore inbox: ${err}`))
+            .finally(() => this.startup.resolve());
         }
       },
       onLog: this.log,
     });
     this.tool = new BusTool(this.conn);
     this.conn.connect();
-    this.publishStatus();
+    this.status.attach(this.conn);
+  }
+
+  /** Lets the first prompt include an old queued delivery, without stalling hooks when the bus is offline. */
+  waitForStartup(): Promise<void> {
+    return (this.startupWait ??= new Promise((resolve) => {
+      const timer = setTimeout(resolve, STARTUP_WAIT_MS);
+      void this.startup.promise.then(() => {
+        clearTimeout(timer);
+        resolve();
+      });
+    }));
   }
 
   close(): void {
     this.closed = true;
     this.live.watch(false);
     clearTimeout(this.wakeTimer);
-    clearTimeout(this.statusTimer);
+    this.status.detach();
     this.conn.close();
   }
 
@@ -93,14 +106,19 @@ export class CodexSession {
   // a previous process queued and acknowledged the delivery, but no hook ever handed it over.
   private async restoreHeld(id: string): Promise<void> {
     const { messages, conversations } = await this.conn.inbox(0, 100);
-    const settings = this.conn.participants.find((p) => p.id === id)?.settings ?? DEFAULT_AGENT_SETTINGS;
+    const settings = this.conn.participants.find((participant) => participant.id === id)?.settings ?? DEFAULT_AGENT_SETTINGS;
     for (const message of messages) {
-      const r = message.receipts.find((r) => r.to === id);
-      if (!r?.deliveredAt || r.seenAt !== null) continue;
+      const receipt = message.receipts.find((r) => r.to === id);
+      if (!receipt?.deliveredAt || receipt.seenAt !== null) continue;
       const conversation = conversations.find((c) => c.id === message.conversationId);
       if (!conversation) continue;
-      await this.deliver({ type: "deliver", message, conversation, replyTo: replyAddress(conversation, id),
-        wake: shouldWake(conversation.kind, message.fromKind, settings) });
+      await this.deliver({
+        type: "deliver",
+        message,
+        conversation,
+        replyTo: replyAddress(conversation, id),
+        wake: shouldWake(conversation.kind, message.fromKind, settings),
+      });
       this.restored.add(message.seq);
     }
   }
@@ -119,17 +137,17 @@ export class CodexSession {
 
   private scheduleWake(): void {
     const id = this.threadId;
-    if (!id || this.closed || this.busy || this.wakePending || this.wakeTimer) return;
+    if (!id || this.closed || this.status.busy || this.wakePending || this.wakeTimer) return;
     // Coalesce a burst and allow a racing user prompt to consume the delivery first.
     this.wakeTimer = setTimeout(() => {
       this.wakeTimer = undefined;
-      if (this.busy || !this.held.some((item) => item.wake)) return;
+      if (this.status.busy || !this.held.hasWake()) return;
       this.wakePending = true;
       void this.wake(id).catch((err) => {
         this.wakePending = false;
         this.log(`could not queue idle wake for ${id}; messages remain queued: ${err.message ?? err}`);
       });
-    }, 150);
+    }, WAKE_DELAY_MS);
   }
 
   private receipt(receipt: ReceiptFrame): void {
@@ -137,25 +155,7 @@ export class CodexSession {
     if (text) this.held.push({ text, wake: false });
   }
 
-  private takeHeld(): string | undefined {
-    if (this.held.length === 0) return undefined;
-    const parts: string[] = [];
-    let size = 0;
-    while (this.held.length) {
-      const item = this.held[0] as Held;
-      let text = item.text;
-      if (text.length > CONTEXT_BUDGET) {
-        text = `${text.slice(0, CONTEXT_BUDGET - 200)}\n… (cut here; message-bus op=show message_id ${item.seq ?? "?"} for all of it)`;
-      }
-      if (parts.length && size + text.length > CONTEXT_BUDGET) break;
-      this.held.shift();
-      if (item.seq !== undefined && this.unseen.delete(item.seq)) this.conn.markSeen(item.seq);
-      parts.push(text);
-      size += text.length + 2;
-    }
-    return parts.join("\n\n");
-  }
-
+  /** Binds this session to Codex task `id` (once; another id is refused) and follows its transcript. */
   bindTask(id: string, transcript: unknown): boolean {
     if (!isThreadId(id) || (this.threadId && this.threadId !== id)) return false;
     this.threadId = id;
@@ -167,7 +167,7 @@ export class CodexSession {
     const sub = Boolean(input.agent_id);
     if (!sub && typeof input.session_id === "string") {
       // Bind once from Codex hook metadata, never a folder name or a field in a bus message.
-      if (!this.bindTask(input.session_id,input.transcript_path)) return {};
+      if (!this.bindTask(input.session_id, input.transcript_path)) return {};
     }
     switch (event) {
       case "SessionStart":
@@ -175,31 +175,28 @@ export class CodexSession {
         if (input.source !== "compact") this.setIdle();
         return this.context("SessionStart");
       case "UserPromptSubmit":
-        this.setBusy();
+        this.status.setBusy();
         return sub ? {} : this.context("UserPromptSubmit");
       case "PreToolUse":
-        this.setBusy();
-        this.runningTools.set(input.tool_use_id ?? `${Date.now()}`, { name: input.tool_name ?? "tool", since: Date.now() });
-        this.statusChanged();
+        this.status.setBusy();
+        this.status.toolStarted(input.tool_use_id ?? `${Date.now()}`, input.tool_name ?? "tool");
         return {};
       case "PostToolUse":
-        this.runningTools.delete(input.tool_use_id ?? "");
-        this.statusChanged();
+        this.status.toolEnded(input.tool_use_id ?? "");
         return sub ? {} : this.context("PostToolUse");
       case "Interrupt":
         if (!sub) {
           this.setIdle();
-          if (this.held.some((item) => item.wake)) this.scheduleWake();
+          if (this.held.hasWake()) this.scheduleWake();
         }
         return {};
       case "Stop": {
         if (sub) return {};
-        const shouldWake = this.held.some((item) => item.wake);
-        if (!shouldWake) {
+        if (!this.held.hasWake()) {
           this.setIdle();
           return {};
         }
-        const text = this.takeHeld();
+        const text = this.held.take();
         // Codex passes the blocking reason to the model as the continuation prompt.
         return text ? { decision: "block", reason: text } : {};
       }
@@ -207,37 +204,12 @@ export class CodexSession {
   }
 
   private context(event: "SessionStart" | "UserPromptSubmit" | "PostToolUse"): Record<string, unknown> {
-    const text = this.takeHeld();
+    const text = this.held.take();
     return text ? { hookSpecificOutput: { hookEventName: event, additionalContext: text } } : {};
-  }
-
-  private setBusy(): void {
-    if (this.busy) return;
-    this.busy = true;
-    this.since = Date.now();
-    this.statusChanged();
   }
 
   private setIdle(): void {
     this.wakePending = false;
-    this.busy = false;
-    this.since = Date.now();
-    this.runningTools.clear();
-    this.statusChanged();
-  }
-
-  private statusChanged(): void {
-    if (!this.statusTimer) this.statusTimer = setTimeout(() => this.publishStatus(), STATUS_COALESCE_MS);
-  }
-
-  private publishStatus(): void {
-    this.statusTimer = undefined;
-    const status: AgentStatus = { state: this.busy ? "busy" : "idle", since: this.since };
-    const oldest = [...this.runningTools.values()].sort((a, b) => a.since - b.since)[0];
-    if (this.busy && oldest) {
-      status.tool = oldest.name;
-      status.toolSince = oldest.since;
-    }
-    this.conn.reportStatus(status);
+    this.status.setIdle();
   }
 }

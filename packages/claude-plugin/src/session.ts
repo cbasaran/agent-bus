@@ -15,15 +15,13 @@
 import * as os from "node:os";
 import { ActivityLog } from "../../client/src/activity";
 import { BusConnection, type Delivery } from "../../client/src/connection";
+import { HeldQueue, UnseenSeqs } from "../../client/src/held";
+import { StatusTracker } from "../../client/src/status";
 import { BusTool, deliveryText, type MessageBusToolParams } from "../../client/src/tool";
 import { deliveryHeaderSeqs } from "../../protocol/src/address";
-import type { AgentStatus, ReceiptFrame } from "../../protocol/src/types";
+import type { ReceiptFrame } from "../../protocol/src/types";
 import { TranscriptFollower, transcriptPathFor } from "./transcript";
 
-/** Status reports are coalesced into one per this window. */
-const STATUS_COALESCE_MS = 250;
-/** Claude Code caps each hook's additionalContext at 10 000 characters. */
-const CONTEXT_BUDGET = 9_500;
 /** A channel event not in the transcript after this long did not reach the session. */
 const CHANNEL_CHECK_MS = Number(process.env.AGENT_BUS_CHANNEL_CHECK_MS) || 20_000;
 /** After this many dropped channel events in a row the channel counts as not enabled (one can be lost to timing). */
@@ -63,23 +61,17 @@ export interface ClaudeSessionOptions {
   log: (line: string) => void;
 }
 
-interface Held {
-  text: string;
-  seq?: number;
-  wake: boolean;
-}
-
 export class ClaudeSession {
   readonly folder: string;
   readonly conn: BusConnection;
   readonly tool: BusTool;
 
+  /** Given to the session (channel or hook), not yet seen in the transcript. */
+  private readonly unseen = new UnseenSeqs((seq) => this.conn.markSeen(seq));
   /** Messages waiting for a hook (or for the turn to end). */
-  private readonly held: Held[] = [];
+  private readonly held = new HeldQueue(this.unseen);
   /** Sent as channel events, not yet seen in the transcript: seq → text (resent at the next hook if lost). */
   private readonly onChannel = new Map<number, string>();
-  /** Given to the session (channel or hook), not yet seen in the transcript. */
-  private readonly unseen = new Set<number>();
   /** False once channel events keep not arriving: wake messages then wait for the next hook. */
   private channelWorks = true;
   /** Channel events dropped in a row. */
@@ -91,12 +83,7 @@ export class ClaudeSession {
   /** Last hook that shows the session doing something (not SessionStart). */
   private lastActivityAt = 0;
 
-  private busy = false;
-  private since = Date.now();
-  private readonly runningTools = new Map<string, { name: string; since: number }>();
-  private activity: string | undefined;
-  private statusTimer: NodeJS.Timeout | undefined;
-
+  private readonly status: StatusTracker;
   private readonly activityLog: ActivityLog;
   private readonly transcript: TranscriptFollower;
   private readonly sendChannel: ClaudeSessionOptions["sendChannel"];
@@ -106,6 +93,7 @@ export class ClaudeSession {
     this.folder = options.folder;
     this.sendChannel = options.sendChannel;
     this.log = options.log;
+    this.status = new StatusTracker(this.log);
     this.activityLog = new ActivityLog((events, replay) => this.conn.sendActivity(events, replay));
     this.transcript = new TranscriptFollower(
       { onHeaders: (seqs) => this.seenInTranscript(seqs), onInterrupted: () => this.turnEnded() },
@@ -125,15 +113,15 @@ export class ClaudeSession {
     });
     this.tool = new BusTool(this.conn);
     this.conn.connect();
-    this.publishStatus();
+    this.status.attach(this.conn);
     void (options.channelReady ?? Promise.resolve()).then(() => {
       this.channelOpen = true;
-      if (!this.busy) this.wakeHeld();
+      if (!this.status.busy) this.wakeHeld();
     });
   }
 
   close(): void {
-    clearTimeout(this.statusTimer);
+    this.status.detach();
     clearTimeout(this.channelCheck);
     this.transcript.stop();
     this.activityLog.dispose();
@@ -151,7 +139,7 @@ export class ClaudeSession {
     const text = await deliveryText(this.conn, delivery);
     const seq = delivery.message.seq;
     this.unseen.add(seq);
-    if (delivery.wake && !this.busy && this.channelWorks && this.channelOpen) await this.toChannel(text, seq);
+    if (delivery.wake && !this.status.busy && this.channelWorks && this.channelOpen) await this.toChannel(text, seq);
     else this.held.push({ text, seq, wake: delivery.wake });
   }
 
@@ -165,7 +153,7 @@ export class ClaudeSession {
     await this.sendChannel(text, { message_id: String(seq) });
     this.onChannel.set(seq, text);
     this.channelSentAt = Date.now();
-    this.setBusy();
+    this.status.setBusy();
     this.channelCheck ??= setTimeout(() => this.checkChannel(), CHANNEL_CHECK_MS);
   }
 
@@ -201,49 +189,21 @@ export class ClaudeSession {
         this.channelDrops = 0;
         this.channelWorks = true;
       }
-      if (this.unseen.delete(seq)) this.conn.markSeen(seq);
+      this.unseen.seen(seq);
     }
-  }
-
-  /** Held texts for a hook's additionalContext, within Claude Code's size cap; the rest stays held. */
-  private takeHeld(): string | undefined {
-    if (this.held.length === 0) return undefined;
-    const parts: string[] = [];
-    let size = 0;
-    while (this.held.length > 0) {
-      const item = this.held[0] as Held;
-      let text = item.text;
-      if (text.length > CONTEXT_BUDGET) {
-        text = `${text.slice(0, CONTEXT_BUDGET - 200)}\n… (cut here; message-bus op=show message_id ${item.seq ?? "?"} for all of it)`;
-      }
-      if (parts.length > 0 && size + text.length > CONTEXT_BUDGET) break;
-      this.held.shift();
-      // In the hook's answer it goes into the very next model request.
-      if (item.seq !== undefined && this.unseen.delete(item.seq)) this.conn.markSeen(item.seq);
-      parts.push(text);
-      size += text.length + 2;
-    }
-    return parts.join("\n\n");
   }
 
   /** The turn ended (Stop, interrupt): held wake messages start the next one. */
   private turnEnded(): void {
-    this.busy = false;
-    this.since = Date.now();
-    this.runningTools.clear();
-    this.activity = undefined;
-    this.statusChanged();
+    this.status.setIdle();
     this.wakeHeld();
   }
 
   /** Sends held wake messages as channel events (when the channel works and is open). */
   private wakeHeld(): void {
     if (!this.channelWorks || !this.channelOpen) return;
-    const wake = this.held.filter((item) => item.wake && item.seq !== undefined);
-    if (wake.length === 0) return;
     // Quiet ones stay held; the channel turn's first hook (if it runs a tool) or the next prompt takes them.
-    this.held.splice(0, this.held.length, ...this.held.filter((item) => !wake.includes(item)));
-    for (const item of wake) {
+    for (const item of this.held.takeWake()) {
       this.toChannel(item.text, item.seq as number).catch((err: Error) => {
         this.log(`channel send of #${item.seq} failed: ${err.message}; it waits for the next prompt`);
         this.held.push(item);
@@ -270,7 +230,7 @@ export class ClaudeSession {
         this.turnEnded();
         return {};
       case "UserPromptSubmit": {
-        this.setBusy();
+        this.status.setBusy();
         // Channel events run this hook too (with their text as the prompt), before the transcript has them: what the
         // prompt carries has arrived.
         const prompt = input.prompt ?? "";
@@ -284,17 +244,15 @@ export class ClaudeSession {
         return this.context("UserPromptSubmit");
       }
       case "PreToolUse":
-        this.setBusy();
-        this.runningTools.set(input.tool_use_id ?? `${Date.now()}`, { name: input.tool_name ?? "tool", since: Date.now() });
-        if (!sub) {
-          const description = input.tool_input?.description;
-          if (typeof description === "string" && description.trim()) this.activity = description.trim();
-        }
-        this.statusChanged();
+        this.status.setBusy();
+        this.status.toolStarted(
+          input.tool_use_id ?? `${Date.now()}`,
+          input.tool_name ?? "tool",
+          sub ? undefined : input.tool_input?.description
+        );
         return {};
       case "PostToolUse":
-        this.runningTools.delete(input.tool_use_id ?? "");
-        this.statusChanged();
+        this.status.toolEnded(input.tool_use_id ?? "");
         return sub ? {} : this.context("PostToolUse");
       case "Stop":
         if (!sub) this.turnEnded();
@@ -304,33 +262,7 @@ export class ClaudeSession {
 
   /** Held messages as additionalContext for `event`; they are seen once in the transcript. */
   private context(event: "UserPromptSubmit" | "PostToolUse"): Record<string, unknown> {
-    const text = this.takeHeld();
+    const text = this.held.take();
     return text ? { hookSpecificOutput: { hookEventName: event, additionalContext: text } } : {};
-  }
-
-  // ---- Status (website, GET /api/state) ----
-
-  private setBusy(): void {
-    if (this.busy) return;
-    this.busy = true;
-    this.since = Date.now();
-    this.statusChanged();
-  }
-
-  private statusChanged(): void {
-    if (this.statusTimer) return;
-    this.statusTimer = setTimeout(() => this.publishStatus(), STATUS_COALESCE_MS);
-  }
-
-  private publishStatus(): void {
-    this.statusTimer = undefined;
-    const status: AgentStatus = { state: this.busy ? "busy" : "idle", since: this.since };
-    const oldest = [...this.runningTools.values()].sort((a, b) => a.since - b.since)[0];
-    if (this.busy && oldest) {
-      status.tool = oldest.name;
-      status.toolSince = oldest.since;
-    }
-    if (this.busy && this.activity) status.activity = this.activity;
-    this.conn.reportStatus(status);
   }
 }

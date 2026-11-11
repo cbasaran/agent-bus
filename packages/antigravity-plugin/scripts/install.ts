@@ -5,17 +5,13 @@
 //   bun run install:antigravity [--url http://bus-host:7800] [--dir <plugin folder>] [--uninstall]
 //
 // The folder is a copy, not a link: it keeps working when this checkout moves or changes; run this again to update.
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { arg, bundleForNode, installBusUrl, jsRuntime, removeOwnedDir, writeJson } from "../../client/src/install";
 
 const PLUGIN = "message-bus";
 const root = path.resolve(import.meta.dir, "..");
-
-function arg(name: string): string | undefined {
-  const i = process.argv.indexOf(`--${name}`);
-  return i > 0 ? process.argv[i + 1] : undefined;
-}
 
 const target = path.resolve(arg("dir") ?? path.join(os.homedir(), ".gemini", "config", "plugins", PLUGIN));
 const appData = path.join(os.homedir(), ".gemini", "antigravity");
@@ -32,31 +28,7 @@ function removeOld(): void {
     unlinkSync(target);
     return;
   }
-  const manifest = path.join(target, "plugin.json");
-  const name = existsSync(manifest) ? (JSON.parse(readFileSync(manifest, "utf8")) as { name?: string }).name : undefined;
-  if (name !== PLUGIN) throw new Error(`${target} exists and is not the ${PLUGIN} plugin; not touching it.`);
-  rmSync(target, { recursive: true });
-}
-
-/** The JS runtime Antigravity should start: node if installed (its GUI PATH may lack it, so the absolute path), else bun. */
-function runtime(): string {
-  return Bun.which("node") ?? process.execPath;
-}
-
-async function build(outdir: string): Promise<void> {
-  for (const [entry, name] of [
-    ["src/daemon-main.ts", "daemon"],
-    ["src/hook.ts", "hook"],
-  ] as const) {
-    const result = await Bun.build({
-      entrypoints: [path.join(root, entry)],
-      outdir,
-      target: "node",
-      format: "esm",
-      naming: `${name}.mjs`,
-    });
-    if (!result.success) throw new AggregateError(result.logs, `Building ${entry} failed`);
-  }
+  removeOwnedDir(target, path.join(target, "plugin.json"), PLUGIN, "plugin");
 }
 
 /** Asks the running Antigravity (if any) to restart its MCP servers, so the new daemon replaces the old one. */
@@ -81,15 +53,16 @@ async function refreshAntigravity(): Promise<string> {
 }
 
 async function install(): Promise<void> {
-  const previous = path.join(target, "config.json");
-  const oldUrl = existsSync(previous) ? (JSON.parse(readFileSync(previous, "utf8")) as { busUrl?: string }).busUrl : undefined;
-  const busUrl = (arg("url") ?? process.env.AGENT_BUS_URL ?? oldUrl ?? "http://127.0.0.1:7800").replace(/\/+$/, "");
-  const node = runtime();
+  const busUrl = installBusUrl(path.join(target, "config.json"));
+  const node = jsRuntime();
 
   removeOld();
   mkdirSync(target, { recursive: true });
-  await build(path.join(target, "dist"));
-  const json = (name: string, value: unknown): void => writeFileSync(path.join(target, name), `${JSON.stringify(value, null, 2)}\n`);
+  await bundleForNode(root, path.join(target, "dist"), [
+    ["src/daemon-main.ts", "daemon"],
+    ["src/hook.ts", "hook"],
+  ]);
+  const json = (name: string, value: unknown): void => writeJson(path.join(target, name), value);
   json("plugin.json", JSON.parse(readFileSync(path.join(root, "plugin.json"), "utf8")));
   json("config.json", { busUrl });
   json("mcp_config.json", {
