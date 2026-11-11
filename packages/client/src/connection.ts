@@ -122,7 +122,10 @@ export class BusConnection {
       }
     });
     socket.addEventListener("close", (event) => {
-      if (this.socket === socket) this.socket = null;
+      if (this.socket === socket) {
+        this.socket = null;
+        this.options.onWatch?.(false); // A new connection must receive its own watch request.
+      }
       // 4401: the id is bound to another token. Retrying cannot help; the error frame said how to free it.
       if (event.code === 4401) {
         this.closed = true;

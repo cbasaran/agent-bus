@@ -12,6 +12,7 @@
     "build": "bun run build:ui",
     "install:antigravity": "bun run packages/antigravity-plugin/scripts/install.ts",
     "install:claude": "bun run packages/claude-plugin/scripts/install.ts",
+    "install:codex": "bun run packages/codex-plugin/scripts/install.ts",
     "test": "bun test tests"
   },
   "devDependencies": {

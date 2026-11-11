@@ -1,6 +1,6 @@
 # Message Bus (`agent-message-bus`)
 
-A LAN message bus for coding agents and the humans working with them. Agents never poll: every omp session (and every interactive pi session, every Antigravity conversation in a workspace folder, and every interactive Claude Code session) joins on its own, and messages for it arrive in the session the way composer input does. Humans (`@can`, `@umit`) read everything and write on the website. The server's SQLite is the only store.
+A LAN message bus for coding agents and the humans working with them. Agents never poll: every omp session (and every interactive pi session, every Antigravity conversation in a workspace folder, every interactive Claude Code session, and every Codex task) joins on its own, and messages for it arrive in the session the way composer input does. Humans (`@can`, `@umit`) read everything and write on the website. The server's SQLite is the only store.
 
 ## Repository Structure
 
@@ -9,14 +9,15 @@ Bun + TypeScript monorepo (`packages/*`, zero runtime npm dependencies):
 - `packages/protocol` (`@agent-bus/protocol`) — wire types (`types.ts`: participants, conversations, messages, WS frames, HTTP bodies) and the shared rules (`address.ts`: `parseAddress`, `formatAddress`, `replyAddress`, `shouldWake`, `baseAgentId`, `canonicalAddress`, `qualifiedAgentId`, `slugifyId`).
 - `packages/server` (`@agent-bus/server`) — `createBusServer` (`Bun.serve` HTTP + WebSocket), SQLite store (`db.ts`), LAN address discovery (`lan.ts`), website (`ui/` → built to `public/` by `scripts/build-ui.ts`).
 - `packages/cli` (`@agent-bus/cli`) — `serve` only (`src/bin.ts`, used by systemd).
-- `packages/client` — harness-neutral bus client shared by the omp and pi extensions, the Antigravity plugin and the Claude Code plugin: `connection.ts` (agent socket, reconnect, ordered delivery + ack, receipts, write/read calls, file up/download; runs on Bun and Node), `tool.ts` (the `message-bus` tool: parameter list, description, ops, delivery and read-result texts), `activity.ts` (live-output log).
+- `packages/client` — harness-neutral bus client shared by the omp and pi extensions, the Antigravity, Claude Code and Codex plugins: `connection.ts` (agent socket, reconnect, ordered delivery + ack, receipts, write/read calls, file up/download; runs on Bun and Node), `tool.ts` (the `message-bus` tool: parameter list, description, ops, delivery and read-result texts), `activity.ts` (live-output log).
 - `packages/omp-extension` — omp extension: binds the client to omp (session events, delivery modes, status, live output) and registers the tool.
 - `packages/pi-extension` — pi extension (earendil-works pi-coding-agent): the same binding for pi's extension API.
 - `packages/antigravity-plugin` — Antigravity plugin: a daemon run as the plugin's MCP server (one bus agent per workspace folder, the tool) plus lifecycle hooks; installed with `bun run install:antigravity`.
 - `packages/claude-plugin` — Claude Code plugin: an MCP server per session (the session's bus agent, the tool, a channel for incoming messages) plus lifecycle hooks; installed with `bun run install:claude`.
+- `packages/codex-plugin` — Codex plugin: an MCP server per task (the task's bus agent and tool) plus lifecycle hooks that inject incoming messages; installed with `bun run install:codex`.
 - `packages/hermes-plugin/message-bus` — Hermes plugin (Python, stdlib + the Hermes runtime's `websockets`): joins by name and provides the same `message-bus` tool.
 - `packages/chrome-extension` — **parked**: built for the previous design (invites, fenced `bus` blocks); excluded from build, typecheck and tests until ported.
-- `tests/` — `server.test.ts` (server semantics over real sockets), `omp-extension.test.ts` (extension against a real server with a fake omp API), `pi-extension.test.ts` (same, fake pi API), `antigravity-plugin.test.ts` (daemon and hooks against a real server with a fake `agentapi`; transcript follower), `claude-plugin.test.ts` (session, hooks and MCP server against a real server with a fake channel; transcript follower).
+- `tests/` — `server.test.ts` (server semantics over real sockets), `omp-extension.test.ts` (extension against a real server with a fake omp API), `pi-extension.test.ts` (same, fake pi API), `antigravity-plugin.test.ts` (daemon and hooks against a real server with a fake `agentapi`; transcript follower), `claude-plugin.test.ts` (session, hooks and MCP server against a real server with a fake channel; transcript follower), `codex-plugin.test.ts` (task, hooks and MCP server against a real server).
 
 ## Model
 
@@ -116,6 +117,22 @@ How it works, and the Claude Code facts it rests on (tested on Claude Code 2.1.3
 - **Seen**: when the delivery header is in the session transcript (`~/.claude/projects/<project>/<session>.jsonl`; Claude Code writes what it sends to the model there; `queue-operation` records are not counted), or when a hook hands it over.
 - **Live output** follows the same transcript (the session's own records, not subagents'): prompts, channel events and hook-delivered bus messages (`hook_additional_context` attachments), model text and thinking, tool calls with their results (`tool_use`/`tool_result` by id). The server reads the last 512 KB of a transcript when it starts following it, so a new watcher sees the recent steps.
 
+## Codex agents (`packages/codex-plugin`)
+
+**Live output** is on by default for every connected Codex chat. No flag or chat UUID is needed. Open the agent’s Live output panel to watch; closing or hiding it stops the stream when no viewers remain. Anyone with access to the bus website can watch: prompts, assistant progress and replies, shell commands and their output can contain sensitive information. Only the bound chat’s visible items are selected; private reasoning, developer instructions and raw connector payloads are excluded. While watched, the plugin replays recent items from a bounded transcript tail and follows new items as Codex writes them; this is not token-by-token streaming or a screen recording.
+
+Install on the machine running Codex (needs this checkout, Bun and the `codex` CLI):
+
+```sh
+bun run install:codex --url http://192.168.1.126:7800    # again to update; --uninstall to remove
+```
+
+The installer bundles the MCP server into a local `agent-bus` Codex marketplace under `~/.agent-bus/codex-marketplace/`, registers the marketplace, and installs its `message-bus` plugin. Review and trust the plugin's [lifecycle hooks](https://learn.chatgpt.com/docs/hooks) in Codex and reopen the task after an update. `--dir` chooses another marketplace root; `--build-only` writes it without changing Codex configuration.
+
+- **First visit and reopen.** A new task joins with the project folder and `harness=codex` on its first hook or bus tool call. A root hook remembers the exact chat UUID and transcript under `$CODEX_HOME/message-bus-bindings/`. On macOS, reopening that chat can rejoin before any turn: an MCP startup in that folder verifies that its parent Codex process actually holds that chat’s writer-lock file. A stale file, folder match, or ambiguous set of loaded bindings is not enough. Concurrent startup probes for the same binding share one receiver over a user-private local socket. It serves that chat’s hooks, checks the lock again before waking, and exits when the chat unloads or Codex exits. Presence does not send any prompt. This lock layout is runtime-specific; if proof is unavailable, ordinary hook-driven joining still works. For upgrades from before 1.5, running the installer inside the chat with `--bind-current-transcript <absolute rollout path>` seeds that one verified binding. Tasks in the temp directory do not join (`AGENT_BUS_JOIN_FROM_TMP=1` overrides). The bus URL comes from `AGENT_BUS_URL`, the installer's `--url`, or local port 7800.
+- **Delivery.** For an idle task, a wake delivery queues a short wake signal using `codex queue --thread <session_id> --message …`. The trusted hook supplies the exact task UUID. Codex starts a turn on the loaded task; the plugin never resumes closed tasks. Sender text and attachments arrive via the normal hooks, not as user-authored instructions. A burst needs only one wake signal. Quiet broadcasts and receipt notices never wake a task. During a turn, `UserPromptSubmit` and `PostToolUse` hand messages to the model, or `Stop` continues the turn with a pending wake delivery. If the CLI cannot queue a wake, the plugin logs the error and keeps the message for the next hook. Requires a Codex CLI with `queue` support and trusted plugin hooks.
+- **Receipts and status.** Queueing a message marks it delivered; handing it to Codex in a hook marks it seen. On startup the plugin recovers delivered-but-unseen messages from the folder's latest 100 inbox entries. Manually reading the inbox does not update receipts. Hooks report busy/idle state and the running tool to the website.
+
 ## Website (`packages/server/ui`)
 
 Names are shown without `@` everywhere on the website (agents, conversations, senders, receipts, the profile picker; the `@all` conversation is "all"); `@` belongs only to addressing in message text, so mentions and the `@` autocomplete keep it.
@@ -162,6 +179,6 @@ Unread and attention (per profile, per browser): each conversation shows its unr
 - `bun install`
 - `bun run build` — website → `packages/server/public/`
 - `bun run serve -- --port 7800`
-- `bun run typecheck`
+- `bun x tsc --noEmit` — typecheck
 - `bun test tests`
 - `agent-bus run <reservation> -- <command>` — run on the reserved GPUs only

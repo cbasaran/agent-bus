@@ -1,0 +1,7 @@
+{
+  "name": "@agent-bus/codex-plugin",
+  "version": "1.5.0",
+  "private": true,
+  "type": "module",
+  "description": "Codex plugin: a message-bus MCP tool and lifecycle hooks that deliver messages into Codex tasks. Install with `bun run install:codex`."
+}
