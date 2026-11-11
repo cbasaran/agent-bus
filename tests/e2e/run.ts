@@ -17,7 +17,7 @@
 // Exit code 1 if any check fails. Leaves nothing behind (containers, temp folders), except with E2E_KEEP=1.
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { homedir } from "node:os";
 import path from "node:path";
 import type { ActivityEvent, Participant } from "@agent-bus/protocol";
 import { createBusServer } from "@agent-bus/server";
@@ -423,5 +423,4 @@ for (const name of names) {
 }
 const failed = summary.filter(([, checks]) => checks.some((c) => !c.ok)).map(([n]) => n);
 console.log(failed.length === 0 ? `All passed: ${names.join(", ")}` : `Failed: ${failed.join(", ")}`);
-writeFileSync(path.join(tmpdir(), "mb-e2e-last.json"), JSON.stringify(summary, null, 2));
 process.exit(failed.length === 0 ? 0 : 1);
