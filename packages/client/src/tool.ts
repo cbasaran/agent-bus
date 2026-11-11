@@ -87,6 +87,16 @@ export const TOOL_PARAMS: readonly ToolParam[] = [
 /** Every argument the tool takes; anything else is rejected rather than silently ignored. */
 export const TOOL_ARGS: readonly string[] = TOOL_PARAMS.map((p) => p.name);
 
+/** The tool's parameters as JSON Schema (MCP's `inputSchema`; pi validates tool arguments as JSON Schema too). */
+export function toolInputSchema(): Record<string, unknown> {
+  const properties: Record<string, unknown> = {};
+  for (const param of TOOL_PARAMS) {
+    const type = param.type === "string[]" ? { type: "array", items: { type: "string" } } : { type: param.type };
+    properties[param.name] = { ...type, ...(param.enum ? { enum: [...param.enum] } : {}), description: param.description };
+  }
+  return { type: "object", properties, required: ["op"] };
+}
+
 /**
  * The tool description. `arrives` says when bus messages reach the model in this harness; `notJoining` says which
  * sessions are not on the bus.
@@ -136,8 +146,12 @@ export function toolDescription(harness: { arrives: string; notJoining: string }
   );
 }
 
-/** `dir` is the temp directory (`os.tmpdir()`, symlinks resolved) or inside it. */
-export function isUnderTempDir(dir: string): boolean {
+/**
+ * Scratch sessions in the temp directory (`os.tmpdir()`, symlinks resolved, or inside it) are not project agents and
+ * do not join; AGENT_BUS_JOIN_FROM_TMP=1 lets them (tests).
+ */
+export function isScratchFolder(dir: string): boolean {
+  if (process.env.AGENT_BUS_JOIN_FROM_TMP === "1") return false;
   let tmp = os.tmpdir();
   try {
     tmp = realpathSync(tmp);
