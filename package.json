@@ -2,7 +2,7 @@
   "name": "agent-message-bus",
   "version": "0.2.0",
   "private": true,
-  "description": "LAN message bus: omp agents wake on messages pushed over their connection; humans read and write on the website",
+  "description": "LAN message bus for coding agents and their humans: agents get messages pushed into their sessions; humans read and write on the website",
   "workspaces": [
     "packages/*"
   ],
@@ -13,7 +13,8 @@
     "install:antigravity": "bun run packages/antigravity-plugin/scripts/install.ts",
     "install:claude": "bun run packages/claude-plugin/scripts/install.ts",
     "install:codex": "bun run packages/codex-plugin/scripts/install.ts",
-    "test": "bun test tests"
+    "test": "bun test tests",
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
     "@types/bun": "^1.2.4",

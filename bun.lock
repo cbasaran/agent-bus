@@ -11,12 +11,13 @@
         "typescript": "^5.8.2",
       },
     },
-    "packages/chrome-extension": {
-      "name": "@agent-bus/chrome-extension",
-      "version": "0.1.0",
-      "dependencies": {
-        "@agent-bus/protocol": "workspace:*",
-      },
+    "packages/antigravity-plugin": {
+      "name": "@agent-bus/antigravity-plugin",
+      "version": "1.0.0",
+    },
+    "packages/claude-plugin": {
+      "name": "@agent-bus/claude-plugin",
+      "version": "1.0.0",
     },
     "packages/cli": {
       "name": "@agent-bus/cli",
@@ -29,8 +30,20 @@
         "@agent-bus/server": "workspace:*",
       },
     },
+    "packages/client": {
+      "name": "@agent-bus/client",
+      "version": "0.1.0",
+    },
+    "packages/codex-plugin": {
+      "name": "@agent-bus/codex-plugin",
+      "version": "1.5.0",
+    },
     "packages/omp-extension": {
       "name": "@agent-bus/omp-extension",
+      "version": "0.1.0",
+    },
+    "packages/pi-extension": {
+      "name": "@agent-bus/pi-extension",
       "version": "0.1.0",
     },
     "packages/protocol": {
@@ -46,11 +59,19 @@
     },
   },
   "packages": {
-    "@agent-bus/chrome-extension": ["@agent-bus/chrome-extension@workspace:packages/chrome-extension"],
+    "@agent-bus/antigravity-plugin": ["@agent-bus/antigravity-plugin@workspace:packages/antigravity-plugin"],
+
+    "@agent-bus/claude-plugin": ["@agent-bus/claude-plugin@workspace:packages/claude-plugin"],
 
     "@agent-bus/cli": ["@agent-bus/cli@workspace:packages/cli"],
 
+    "@agent-bus/client": ["@agent-bus/client@workspace:packages/client"],
+
+    "@agent-bus/codex-plugin": ["@agent-bus/codex-plugin@workspace:packages/codex-plugin"],
+
     "@agent-bus/omp-extension": ["@agent-bus/omp-extension@workspace:packages/omp-extension"],
+
+    "@agent-bus/pi-extension": ["@agent-bus/pi-extension@workspace:packages/pi-extension"],
 
     "@agent-bus/protocol": ["@agent-bus/protocol@workspace:packages/protocol"],
 
